@@ -1,0 +1,173 @@
+import re
+from dataclasses import dataclass, field
+from config import config
+from rag import query_pine_bugs
+from openai import OpenAI
+
+@dataclass
+class CriticIssue:
+    severity: str
+    line_number: int | None
+    description: str
+    suggested_fix: str
+
+@dataclass
+class CriticReport:
+    issues: list[CriticIssue] = field(default_factory=list)
+    repaint_risk_score: int = 0
+
+    def add_issue(self, severity: str, line_number: int | None, description: str, fix: str):
+        self.issues.append(CriticIssue(severity, line_number, description, fix))
+        if severity == "CRITICAL" and "repaint" in description.lower():
+            self.repaint_risk_score += 5
+        elif severity == "WARNING" and "lookahead" in description.lower():
+            self.repaint_risk_score += 2
+
+class PineCritic:
+    def __init__(self, pine_text: str):
+        self.pine_text = pine_text
+        self.lines = pine_text.split("\n")
+        self.report = CriticReport()
+
+    def run_static_analysis(self):
+        """
+        Hard-coded regex rule engine. Flags fatal Pine Script errors instantly
+        so the LLM doesn't have to guess.
+        """
+        script_text = self.pine_text.lower()
+        
+        # 1. Global Strategy/Indicator checks
+        if "calc_on_every_tick=true" in script_text or "calc_on_every_tick = true" in script_text:
+            self.report.add_issue(
+                "CRITICAL", None,
+                "calc_on_every_tick=true causes extreme intra-bar repainting differences between backtests and live trading.",
+                "Remove calc_on_every_tick or set it to false."
+            )
+
+        # 2. Line-by-Line Regex Checks
+        for i, line in enumerate(self.lines):
+            line_num = i + 1
+            line_lower = line.lower()
+            
+            # Skip comments
+            if line.strip().startswith("//"):
+                continue
+
+            # Check: Explicit lookahead_on (Guaranteed Repaint)
+            if "barmerge.lookahead_on" in line_lower:
+                self.report.add_issue(
+                    "CRITICAL", line_num, 
+                    "Uses lookahead_on, which literally looks into the future. 100% repaint risk.",
+                    "Change to barmerge.lookahead_off or remove entirely."
+                )
+            
+            # Check: request.security missing lookahead
+            if "request.security" in line_lower:
+                if "lookahead" not in line_lower:
+                    self.report.add_issue(
+                        "WARNING", line_num,
+                        "request.security() called without explicit lookahead. Defaults to ON in v3/v4, causing repaints.",
+                        "Add explicit lookahead=barmerge.lookahead_off."
+                    )
+                # Check for using current resolution data inside security
+                if re.search(r'request\.security\([^,]*,[^,]*,[^,]*close[^,]*\)', line_lower):
+                    self.report.add_issue(
+                        "WARNING", line_num,
+                        "Passing 'close' to request.security instead of 'close[1]' can cause repainting on the current bar.",
+                        "Pass historical series like close[1] into the security call."
+                    )
+            
+            # Check: Alert/Entry without barstate confirmation
+            if re.search(r'\b(alert|strategy\.entry|strategy\.close|strategy\.exit)\b', line_lower):
+                # If the script doesn't check barstate ANYWHERE near this, it's dangerous
+                if "barstate.isconfirmed" not in script_text and "barstate.isrealtime" not in script_text:
+                    self.report.add_issue(
+                        "WARNING", line_num,
+                        "Executes trades or alerts without checking barstate.isconfirmed. Will fire multiple times intra-bar.",
+                        "Wrap execution logic in 'if barstate.isconfirmed'."
+                    )
+                    
+            # Check: Division by zero risk
+            if re.search(r'/\s*[a-zA-Z_]', line) and "nz(" not in line_lower and "math.max(" not in line_lower:
+                # Naive check: division by a variable without nz() or max() protection
+                self.report.add_issue(
+                    "INFO", line_num,
+                    "Potential division by zero if the denominator variable equals 0.",
+                    "Wrap denominator in math.max(var, 0.0001) or nz(var, 1)."
+                )
+
+    def run_llm_analysis(self, client: OpenAI = None):
+        if not config.use_llm:
+            return
+
+        print("[OptiEngine - Critic] Running LLM analysis (DeepSeek-Coder)...")
+        try:
+            if client is None:
+                client = OpenAI(base_url=config.llm_base_url, api_key="lm-studio")
+            
+            # Retrieve bugs from RAG
+            known_bugs = query_pine_bugs()
+            bug_context = "\n".join(known_bugs)
+            
+            # Minify Pine Script to save tokens (remove comments and empty lines, preserving indentation)
+            minified_lines = []
+            for line in self.lines:
+                clean_line = line.split('//')[0].rstrip()
+                if clean_line.strip():
+                    minified_lines.append(clean_line)
+            minified_pine_text = '\n'.join(minified_lines)
+
+            prompt = f"""
+You are the Logic Critic agent for Optimization Engine.
+Your job is to audit Pine Script code for repainting, execution biases, and logic errors.
+
+Here are some known issues from our database:
+{bug_context}
+
+Here is the Pine Script:
+```pine
+{minified_pine_text}
+```
+
+Identify any remaining critical logic or repainting issues that static analysis might have missed.
+Use your internal reasoning mode to trace the execution flow bar-by-bar, looking specifically for how data from the future might 'leak' into past signals.
+
+Output your findings as a list of issues. For each, provide:
+- Severity (CRITICAL, WARNING, INFO)
+- Line number (approximate if needed)
+- Description
+- Suggested fix
+
+Keep it concise but technically rigorous.
+"""
+            from llm_utils import call_llm_with_retry
+            llm_output = call_llm_with_retry(
+                client, 
+                messages=[
+                    {"role": "system", "content": "You are a quantitative developer auditing Pine Script."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2
+            )
+            
+            if llm_output:
+                # Add LLM findings as a single meta-issue for now
+                self.report.add_issue(
+                    "INFO", None,
+                    "LLM Analysis Complete. Details attached.",
+                    llm_output
+                )
+        except Exception as e:
+            print(f"[OptiEngine - Critic] LLM analysis failed: {e}")
+
+    def analyze(self, client: OpenAI = None) -> CriticReport:
+        self.run_static_analysis()
+        self.run_llm_analysis(client=client)
+        
+        # Cap repaint risk
+        self.report.repaint_risk_score = min(self.report.repaint_risk_score, 10)
+        return self.report
+
+def run_critic(pine_text: str, client: OpenAI = None) -> CriticReport:
+    critic = PineCritic(pine_text)
+    return critic.analyze(client=client)

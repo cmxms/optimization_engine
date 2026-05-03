@@ -1,0 +1,15 @@
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+
+# Local settings
+.env
+
+# Project data and internal databases
+# (Excluding data/ ensures proprietary CSVs and local SQLite DBs stay private)
+data/
+
+# OS specific
+.DS_Store
+Thumbs.db

@@ -40,6 +40,19 @@ def init_optimization_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS validated_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name TEXT NOT NULL,
+            run_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tv_trades INTEGER,
+            tv_win_rate REAL,
+            tv_net_pnl REAL,
+            engine_sharpe REAL,
+            engine_win_rate REAL,
+            fidelity_score REAL
+        )
+    """)
     conn.commit()
     conn.close()
 

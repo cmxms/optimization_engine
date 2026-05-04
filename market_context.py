@@ -41,13 +41,10 @@ def get_market_snapshot() -> dict:
     async def _fetch_all():
         regime_task = asyncio.create_task(detect_macro_regime())
         breadth_task = asyncio.create_task(analyze_breadth())
-        return await asyncio.gather(regime_task, breadth_task)
+        return await asyncio.wait_for(asyncio.gather(regime_task, breadth_task), timeout=10.0)
 
     try:
-        # Run the async tasks synchronously
-        # We use asyncio.run to start a new event loop for this operation
-        # Note: In Windows, if an event loop is already running, this might cause an error,
-        # but optimization_engine_engine is not fundamentally async.
+        # Run the async tasks synchronously with a timeout
         results = asyncio.run(_fetch_all())
         regime_res, breadth_res = results
 
@@ -69,6 +66,12 @@ def get_market_snapshot() -> dict:
         
         return snapshot
         
+    except asyncio.TimeoutError:
+        print("[OptiEngine - Context] Market context fetch timed out after 10s. Proceeding without context.")
+        return {
+            "status": "timeout",
+            "message": "Market context fetch timed out."
+        }
     except Exception as e:
         print(f"[OptiEngine - Context] Error during snapshot fetch: {e}")
         return {

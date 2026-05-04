@@ -105,40 +105,27 @@ class PineCritic:
             if client is None:
                 client = OpenAI(base_url=config.llm_base_url, api_key="lm-studio")
             
-            # Retrieve bugs from RAG
-            known_bugs = query_pine_bugs()
-            bug_context = "\n".join(known_bugs)
-            
-            # Minify Pine Script to save tokens (remove comments and empty lines, preserving indentation)
+            # Skip RAG to save tokens
             minified_lines = []
             for line in self.lines:
                 clean_line = line.split('//')[0].rstrip()
-                if clean_line.strip():
-                    minified_lines.append(clean_line)
+                if not clean_line.strip():
+                    continue
+                # Skip UI/Visual noise to save context space
+                if any(x in clean_line.lower() for x in ['input.', 'plot', 'table.', 'line.', 'label.', 'bgcolor', 'fill']):
+                    continue
+                minified_lines.append(clean_line)
             minified_pine_text = '\n'.join(minified_lines)
 
             prompt = f"""
-You are the Logic Critic agent for Optimization Engine.
-Your job is to audit Pine Script code for repainting, execution biases, and logic errors.
-
-Here are some known issues from our database:
-{bug_context}
-
-Here is the Pine Script:
+Audit this Pine Script for repainting and logic errors.
+Logic Only:
 ```pine
 {minified_pine_text}
 ```
 
-Identify any remaining critical logic or repainting issues that static analysis might have missed.
-Use your internal reasoning mode to trace the execution flow bar-by-bar, looking specifically for how data from the future might 'leak' into past signals.
-
-Output your findings as a list of issues. For each, provide:
-- Severity (CRITICAL, WARNING, INFO)
-- Line number (approximate if needed)
-- Description
-- Suggested fix
-
-Keep it concise but technically rigorous.
+Identify critical execution or repainting issues.
+Output as a list: Severity, Line, Description, Fix.
 """
             from llm_utils import call_llm_with_retry
             llm_output = call_llm_with_retry(

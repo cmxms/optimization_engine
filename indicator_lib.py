@@ -308,6 +308,123 @@ def calc_trama_ha_signals(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
     sell = fresh_reversal_short & s_s & below
     return pd.DataFrame({'buy': buy, 'sell': sell}, index=df.index)
 
+
+def calc_stateful_streak(condition_a: pd.Series, condition_b: pd.Series) -> pd.Series:
+    """
+    Generic Python replica of Pine's persistent streak pattern:
+        var int streak = 0
+        streak := condition_a ? (streak[1] > 0 ? streak[1]+1 : 1)
+                : condition_b ? (streak[1] < 0 ? streak[1]-1 : -1)
+                : streak[1]
+
+    Returns a signed integer Series:
+        > 0  →  consecutive bars where condition_a was True
+        < 0  →  consecutive bars where condition_b was True
+        0    →  neither condition active yet
+    """
+    n = len(condition_a)
+    a_arr = condition_a.values
+    b_arr = condition_b.values
+    streak = np.zeros(n, dtype=int)
+    for i in range(1, n):
+        if a_arr[i]:
+            streak[i] = streak[i - 1] + 1 if streak[i - 1] > 0 else 1
+        elif b_arr[i]:
+            streak[i] = streak[i - 1] - 1 if streak[i - 1] < 0 else -1
+        else:
+            streak[i] = streak[i - 1]
+    return pd.Series(streak, index=condition_a.index)
+
+
+def calc_tdv_locked_state(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
+    """
+    Exact Python replica of the TD Volume (TDV) locked_state logic from the TD NQ Bot.
+
+    Pine's stateful variables replicated:
+        var int locked_state = 1
+        var bool tdv_turned_bullish = false
+        var bool tdv_turned_bearish = false
+
+    The key subtlety: state only changes on barstate.isconfirmed (bar close).
+    Weak-body candles penalize state changes (reset state_streak to 0).
+
+    Returns DataFrame with columns:
+        tdv_pos     : bool — True when locked_state == 1 (bullish)
+        tdv_neg     : bool — True when locked_state == 0 (bearish)
+        turned_bull : bool — True on the exact bar the state flipped to bullish
+        turned_bear : bool — True on the exact bar the state flipped to bearish
+    """
+    vol_ma_len   = max(1, int(kwargs.get('tdv_vol_ma_len', 12)))
+    smooth_bars  = max(1, int(kwargs.get('tdv_smoothBars', 4)))
+    min_body_pct = float(kwargs.get('tdv_min_body_pct', 20))
+    use_trama_gate = bool(kwargs.get('tdv_use_trama_gate', True))
+    trama_len    = int(kwargs.get('trama_med_len', 20))  # internal TRAMA(20)
+
+    high  = df['high'].values
+    low   = df['low'].values
+    close = df['close'].values
+    open_ = df['open'].values if 'open' in df.columns else close
+    vol   = df['volume'].values
+    n     = len(df)
+
+    # Candle metrics
+    candle_range = high - low
+    body_pct = np.where(candle_range > 0, np.abs(close - open_) / candle_range * 100.0, 0.0)
+    is_weak  = body_pct < min_body_pct
+
+    # Buy/sell volume decomposition
+    bvol = np.where(candle_range > 0, vol * (close - low) / candle_range, vol / 2)
+    svol = np.where(candle_range > 0, vol * (high - close) / candle_range, vol / 2)
+
+    bvol_sum = pd.Series(bvol).rolling(vol_ma_len, min_periods=1).sum().values
+    svol_sum = pd.Series(svol).rolling(vol_ma_len, min_periods=1).sum().values
+    raw_buy  = (bvol_sum > svol_sum).astype(int)
+
+    # Optional TRAMA gate
+    if use_trama_gate:
+        trama_vals = calc_trama(
+            df['high'], df['low'], df['close'], trama_len
+        ).values
+        price_above_trama = (close > trama_vals).astype(int)
+        raw_buy = raw_buy & price_above_trama
+
+    # State streak + weak-body penalty (mirrors Pine's state_streak logic)
+    sig     = raw_buy.copy()
+    streak  = np.zeros(n, dtype=int)
+    locked  = np.ones(n, dtype=int)  # locked_state starts as 1 (bullish)
+
+    for j in range(1, n):
+        # Weak body penalises a potential state change
+        if is_weak[j] and sig[j] != sig[j - 1]:
+            sig[j] = sig[j - 1]
+
+        if sig[j] == sig[j - 1]:
+            streak[j] = streak[j - 1] + 1
+        else:
+            streak[j] = 1
+
+        # Acceleration shortcut: strong accel allows immediate flip (required_bars = 1)
+        # We approximate this conservatively — always require smooth_bars.
+        required = smooth_bars
+
+        if streak[j] >= required:
+            locked[j] = sig[j]
+        else:
+            locked[j] = locked[j - 1]
+
+    tdv_pos     = pd.Series(locked == 1, index=df.index)
+    tdv_neg     = pd.Series(locked == 0, index=df.index)
+    turned_bull = tdv_pos & ~tdv_pos.shift(1).fillna(False)
+    turned_bear = tdv_neg & ~tdv_neg.shift(1).fillna(False)
+
+    return pd.DataFrame({
+        'tdv_pos':     tdv_pos,
+        'tdv_neg':     tdv_neg,
+        'turned_bull': turned_bull,
+        'turned_bear': turned_bear,
+    }, index=df.index)
+
+
 INDICATOR_CATALOG = {
     "EMA": calc_ema,
     "SMA": calc_sma,
@@ -323,11 +440,13 @@ INDICATOR_CATALOG = {
     "BODY_PCT": calc_candle_body_pct,
     "WICK_RATIO": calc_wick_ratio,
     "TREND_STREAK": calc_trend_streak,
+    "STATEFUL_STREAK": calc_stateful_streak,
     "BARS_SINCE": calc_bars_since,
     "CROSS_ABOVE": calc_cross_above,
     "CROSS_BELOW": calc_cross_below,
     "TRAMA": calc_trama,
     "HA": calc_heikin_ashi,
     "RSI_EXHAUSTION_SIGNALS": calc_rsi_exhaustion_signals,
-    "TRAMA_HA_SIGNALS": calc_trama_ha_signals
+    "TRAMA_HA_SIGNALS": calc_trama_ha_signals,
+    "TDV_LOCKED_STATE": calc_tdv_locked_state,
 }

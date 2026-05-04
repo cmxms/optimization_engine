@@ -98,10 +98,12 @@ class VRAMManager:
             print(f"  [VRAM] Loading '{agent_name}' model...")
             try:
                 self._ensure_lms()
-                self._current_handle = lms.llm(model_key)
+                # Request a larger context window (16k) to handle big strategies
+                # Using 'n_ctx' as the standard parameter for context size
+                self._current_handle = lms.llm(model_key, config={"n_ctx": 16384})
                 self._current_agent = agent_name
                 self._current_resolved_key = model_key
-                print(f"  [VRAM] Success. Model {model_key} loaded.")
+                print(f"  [VRAM] Success. Model {model_key} loaded (n_ctx=16k).")
             except Exception as e:
                 print(f"  [VRAM] CRITICAL: Failed to load {model_key}: {e}")
                 raise

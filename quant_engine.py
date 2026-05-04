@@ -150,24 +150,22 @@ class QuantEngine:
 
     def generate_signals(self, df: pd.DataFrame, params: dict):
         """
-        Two-tier signal generation — strategy agnostic.
+        Generates buy/sell signals using the Python indicator library (always Tier 2).
 
-        Tier 1 (preferred): Use pre-exported TradingView 'buy'/'sell' columns when
-                            present in the data CSV.  These are the actual Pine Script
-                            signals — 100% fidelity, no reconstruction needed.
-        Tier 2 (fallback):  Reconstruct signals via IR signal_logic mapping.
+        TradingView-exported signal columns (buy/sell) are intentionally NOT used here.
+        They are used exclusively by the Parity Checker to verify that the Python math
+        matches the Pine Script math before optimization begins.
+
+        If the IR recipe has no recognized signal_logic mapping, returns empty signals.
         """
-        buy_col  = next((c for c in df.columns if c.lower() in ('buy', 'buy_signal', 'long')), None)
-        sell_col = next((c for c in df.columns if c.lower() in ('sell', 'sell_signal', 'short')), None)
-        if buy_col and sell_col:
-            return df[buy_col].fillna(0).astype(bool).values, df[sell_col].fillna(0).astype(bool).values
-
-        # Tier 2
         profile = self.recipe.get("signal_logic")
         if profile and profile.get("indicators"):
             return self._generate_profile_signals(df, params, profile)
-        
-        # If no TV export and no IR signal_logic, return empty signals
+
+        # No signal logic in IR — return empty signals
+        # This should not normally happen after the overhaul: the IR Builder should
+        # always produce a signal_logic block. If this fires, check ir_builder.py.
+        print("  [Quant] WARNING: No signal_logic in recipe. Returning empty signals.")
         return np.zeros(len(df), dtype=bool), np.zeros(len(df), dtype=bool)
 
     def _generate_profile_signals(self, df: pd.DataFrame, params: dict, profile: dict):
@@ -384,44 +382,61 @@ class QuantEngine:
     def optimize(self, n_trials: int = 30):
         """
         Main optimization entry point. Runs 5-Fold Walk Forward Analysis.
-        Fully strategy-agnostic — optimizes all signal + risk parameters
-        for any Pine Script project.
+
+        Full-variable optimization: ALL non-display parameters are optimized every run.
+        The Parity Gate is enforced before Optuna starts — if parity fails (blocking=True),
+        optimization aborts immediately with a clear error.
         """
         all_params_def = self.recipe.get("optimizable_parameters", [])
 
-        # Detect signal tier — affects parity check only
-        buy_col  = next((c for c in self.df.columns if c.lower() in ('buy', 'buy_signal', 'long')), None)
-        sell_col = next((c for c in self.df.columns if c.lower() in ('sell', 'sell_signal', 'short')), None)
-        using_tv_signals = bool(buy_col and sell_col)
-        if using_tv_signals:
-            print("  [Quant] Tier 1: TradingView signal export detected.")
-        else:
-            print("  [Quant] Tier 2: No TV export. Optimizing all signal + risk parameters.")
-
-        # 1. Parity Check
+        # --- Parity Gate ---
+        # Generate signals with default params to run the parity check.
         default_params = {pr['name']: pr.get('default') for pr in all_params_def}
         b_def, s_def = self.generate_signals(self.df, default_params)
         self.report.parity_report = run_parity_check(self.df, b_def, s_def)
 
-        # 2. Walk Forward Splits
+        if self.report.parity_report.blocking:
+            print("\n" + "="*60)
+            print("  ERROR: PARITY GATE FAILED — OPTIMIZATION ABORTED")
+            print("="*60)
+            print(f"  Fidelity: {self.report.parity_report.fidelity_score*100:.1f}% (Required: 95%)")
+            print(f"  Analysis: {self.report.parity_report.drift_analysis}")
+            print("="*60 + "\n")
+            import sys
+            sys.exit(1)
+
+        if self.report.parity_report.available:
+            print(f"  [Quant] Parity Gate: PASSED ({self.report.parity_report.fidelity_score*100:.1f}%)")
+        else:
+            print("  [Quant] Parity Gate: NOT_VERIFIABLE (no TV signal export in CSV — proceeding unverified)")
+
+        # --- Full-Variable Optimization ---
+        # Optimize ALL non-display parameters — signal, risk, and filter roles.
+        # Display params (colors, labels, session strings) are never passed to Optuna.
+        optimizable_params = [p for p in all_params_def if p.get('role') != 'display']
+        print(f"  [Quant] Optimizing {len(optimizable_params)} parameters "
+              f"({len([p for p in optimizable_params if p.get('role')=='signal'])} signal, "
+              f"{len([p for p in optimizable_params if p.get('role')=='risk'])} risk, "
+              f"{len([p for p in optimizable_params if p.get('role') not in ('signal','risk')])} filter).")
+
+        # 5-Fold Walk-Forward splits
         k_folds = 5
         chunk_size = len(self.df) // k_folds
-        if chunk_size < 100: k_folds = 2
+        if chunk_size < 100:
+            k_folds = 2
 
         fold_oos_sharpes, fold_is_sharpes, all_oos_trades, all_oos_regimes = [], [], [], []
         final_best = {}
         all_fold_params = []
 
-        # 3. Optimization Loop
         for i in range(k_folds - 1):
-            is_end = (i + 1) * chunk_size
+            is_end  = (i + 1) * chunk_size
             oos_end = (i + 2) * chunk_size if i < k_folds - 2 else len(self.df)
             df_is, df_oos = self.df.iloc[:is_end], self.df.iloc[is_end:oos_end]
 
-            # Optimize all signal + risk params
-            optimizable_params = [p for p in all_params_def if p.get('role') in ('signal', 'risk')]
-            
-            best_fold_params, best_fold_val = self._run_optuna_fold(df_is, all_params_def, optimizable_params, n_trials)
+            best_fold_params, best_fold_val = self._run_optuna_fold(
+                df_is, all_params_def, optimizable_params, n_trials
+            )
             all_fold_params.append(best_fold_params)
             fold_is_sharpes.append(best_fold_val)
 
@@ -430,14 +445,18 @@ class QuantEngine:
             f_o = compile_filters(df_oos, best_fold_params, self.recipe.get("filters", []))
             res = self.run_backtest(df_oos, b_o, s_o, best_fold_params, filter_masks=f_o)
             fold_oos_sharpes.append(res['sharpe'])
-            
+
             if res['count'] > 0:
                 all_oos_trades.extend(res['trades'].tolist())
                 all_oos_regimes.extend(res.get('regimes', []))
-            
-            # Log failures to RAG
+
+            # Log severe OOS degradation to RAG
             if fold_is_sharpes[-1] > 1.0 and res['sharpe'] < fold_is_sharpes[-1] * 0.3:
-                log_failed_backtest(os.path.basename(self.project_dir), best_fold_params, res['sharpe'], "Severe OOS Degradation", {"is": fold_is_sharpes[-1], "fold": i})
+                log_failed_backtest(
+                    os.path.basename(self.project_dir), best_fold_params,
+                    res['sharpe'], "Severe OOS Degradation",
+                    {"is": fold_is_sharpes[-1], "fold": i},
+                )
 
         # Aggregate final params (median across folds)
         import statistics
@@ -449,11 +468,12 @@ class QuantEngine:
                 else:
                     try:
                         final_best[k] = type(vals[0])(statistics.median(vals))
-                    except:
+                    except Exception:
                         final_best[k] = vals[0]
 
-        # 4. Final Report Aggregation
-        return self._finalize_report(fold_is_sharpes, fold_oos_sharpes, all_oos_trades, all_oos_regimes, final_best)
+        return self._finalize_report(
+            fold_is_sharpes, fold_oos_sharpes, all_oos_trades, all_oos_regimes, final_best
+        )
 
     def _run_optuna_fold(self, df_is, all_params, opt_params, n_trials):
         """Helper to run a single Optuna study for a fold."""

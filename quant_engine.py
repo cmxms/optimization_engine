@@ -11,6 +11,7 @@ from tqdm import tqdm
 from functools import lru_cache
 from parity_checker import run_parity_check, ParityReport
 from regime_tagger import tag_regimes
+from filter_compiler import compile_filters
 
 # Suppress optuna logging
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -154,8 +155,7 @@ class QuantEngine:
         Tier 1 (preferred): Use pre-exported TradingView 'buy'/'sell' columns when
                             present in the data CSV.  These are the actual Pine Script
                             signals — 100% fidelity, no reconstruction needed.
-        Tier 2 (fallback):  Reconstruct signals via strategy profile or archetype.
-                            Used when no TV export is available.
+        Tier 2 (fallback):  Reconstruct signals via IR signal_logic mapping.
         """
         buy_col  = next((c for c in df.columns if c.lower() in ('buy', 'buy_signal', 'long')), None)
         sell_col = next((c for c in df.columns if c.lower() in ('sell', 'sell_signal', 'short')), None)
@@ -163,10 +163,12 @@ class QuantEngine:
             return df[buy_col].fillna(0).astype(bool).values, df[sell_col].fillna(0).astype(bool).values
 
         # Tier 2
-        profile = self.recipe.get("profile")
-        if profile is not None:
+        profile = self.recipe.get("signal_logic")
+        if profile and profile.get("indicators"):
             return self._generate_profile_signals(df, params, profile)
-        return self._generate_fallback_signals(df, params)
+        
+        # If no TV export and no IR signal_logic, return empty signals
+        return np.zeros(len(df), dtype=bool), np.zeros(len(df), dtype=bool)
 
     def _generate_profile_signals(self, df: pd.DataFrame, params: dict, profile: dict):
         """Internal helper for profile-driven signal generation."""
@@ -188,101 +190,21 @@ class QuantEngine:
         short_signal = self._evaluate_conditions(df, params, computed, profile.get("entry_logic", {}).get("short", []))
         return buy_signal.values, short_signal.values
 
-    def _generate_fallback_signals(self, df: pd.DataFrame, params: dict):
-        """Hardcoded archetype logic for legacy or manual strategies."""
-        archetype = self.recipe.get("archetype", "UNKNOWN")
-        if archetype == "TRAMA_HA_MOMENTUM":
-            return self._logic_trama_ha(df, params)
-        if archetype == "RSI_PERCENTR_EXHAUSTION":
-            return self._logic_rsi_percentr(df, params)
-        # Auto-detect: if RSI column exists, try RSI/PercentR exhaustion logic
-        if 'rsi' in df.columns:
-            return self._logic_rsi_percentr(df, params)
-        # Default simple momentum fallback
-        return (df['close'] > df['close'].shift(1)).values, (df['close'] < df['close'].shift(1)).values
-
-    def _logic_rsi_percentr(self, df: pd.DataFrame, params: dict):
-        """
-        Reconstructs the RSI + Williams %R Exhaustion signal (fully vectorized).
-        Mirrors Pine Script CM NQ strategy:
-          - Long:  RSI crosses above SMA AND was recently oversold (within rsiLookback bars)
-                   AND %R dual-timeframe oversold
-          - Short: RSI crosses below SMA AND was recently overbought AND %R overbought
-        """
-        from indicator_lib import calc_rsi, calc_sma
-
-        rsi_len      = int(params.get("rsiLen",        14))
-        rsi_sma_len  = int(params.get("rsiSmaLength",  14))
-        rsi_ob       = int(params.get("rsiObLevel",    68))
-        rsi_os       = int(params.get("rsiOsLevel",    32))
-        rsi_lookback = int(params.get("rsiLookback",   5))
-        threshold    = int(params.get("threshold",     30))
-        short_len    = int(params.get("shortLength",   21))
-        long_len     = int(params.get("longLength",    112))
-        cooldown     = int(params.get("signalCooldown", 30))
-
-        close = df['close']
-
-        # Use pre-exported RSI if available (Tier 1.5 — partial export)
-        if 'rsi' in df.columns and df['rsi'].notna().sum() > 100:
-            rsi = df['rsi'].ffill()
-        else:
-            rsi = calc_rsi(close, rsi_len)
-
-        if 'rsi-based ma' in df.columns and df['rsi-based ma'].notna().sum() > 100:
-            rsi_sma = df['rsi-based ma'].ffill()
-        else:
-            rsi_sma = calc_sma(rsi, rsi_sma_len)
-
-        # Williams %R (short and long) — fully vectorized
-        def percent_r(length):
-            highest = close.rolling(length).max()
-            lowest  = close.rolling(length).min()
-            rng = (highest - lowest).clip(lower=1e-10)
-            return 100.0 * (close - highest) / rng
-
-        s_pr = percent_r(short_len)
-        l_pr = percent_r(long_len)
-
-        overbought = (s_pr >= -threshold) & (l_pr >= -threshold)
-        oversold   = (s_pr <= -100 + threshold) & (l_pr <= -100 + threshold)
-
-        # RSI crossovers — vectorized
-        rsi_cross_above = (rsi > rsi_sma) & (rsi.shift(1) <= rsi_sma.shift(1))
-        rsi_cross_below = (rsi < rsi_sma) & (rsi.shift(1) >= rsi_sma.shift(1))
-
-        # "Was recently OB/OS within N bars" — rolling max on boolean = any() equivalent
-        was_os = (rsi <= rsi_os).rolling(rsi_lookback + 1, min_periods=1).max().astype(bool)
-        was_ob = (rsi >= rsi_ob).rolling(rsi_lookback + 1, min_periods=1).max().astype(bool)
-
-        raw_long  = (rsi_cross_above & was_os & oversold).values
-        raw_short = (rsi_cross_below & was_ob & overbought).values
-
-        # Apply cooldown — vectorized via cumsum grouping
-        n = len(df)
-        buy  = np.zeros(n, dtype=bool)
-        sell = np.zeros(n, dtype=bool)
-        last_long_bar = -(cooldown + 1)
-        last_short_bar = -(cooldown + 1)
-        for i in range(n):
-            if raw_long[i] and (i - last_long_bar) >= cooldown:
-                buy[i] = True
-                last_long_bar = i
-            if raw_short[i] and (i - last_short_bar) >= cooldown:
-                sell[i] = True
-                last_short_bar = i
-
-        return buy, sell
-
-
-
 
     def _evaluate_conditions(self, df: pd.DataFrame, params: dict, computed: dict, conditions: list) -> pd.Series:
         """Evaluates a stack of conditions (indicators, price action) into a boolean series."""
         signal = pd.Series(True, index=df.index)
         for cond in conditions:
             c_type = cond.get("type")
-            if c_type == "price_above_stack":
+            if c_type == "boolean_series":
+                src = computed.get(cond.get("source"))
+                if src is not None:
+                    col = cond.get("column")
+                    if col and hasattr(src, "columns") and col in src.columns:
+                        signal &= src[col].astype(bool)
+                    else:
+                        signal &= src.astype(bool)
+            elif c_type == "price_above_stack":
                 for ind in cond.get("stack", []): signal &= (df['close'] > computed[ind])
             elif c_type == "price_below_stack":
                 for ind in cond.get("stack", []): signal &= (df['close'] < computed[ind])
@@ -302,249 +224,9 @@ class QuantEngine:
                 signal &= (wick <= ha_body)
         return signal
 
-    def run_backtest(self, df: pd.DataFrame, buy: np.ndarray, short: np.ndarray, params: dict) -> dict:
-        """
-        Pure risk/exit simulator — intentionally strategy-agnostic.
 
-        No indicator logic, no session filters, no volume gates live here.
-        Entry signals arrive fully-formed from generate_signals().
-        This layer handles only: trailing stops, fixed stops/targets, slippage,
-        commissions, cooldown bars, and same-bar reversal guards.
-        """
-        high, low, close = df['high'].values, df['low'].values, df['close'].values
-        regimes = df['regime'].values if 'regime' in df.columns else np.array(['UNKNOWN'] * len(df))
 
-        stop_ticks        = params.get("stop_ticks", 80)
-        target_ticks      = params.get("target_ticks", 300)
-        use_trail         = params.get("use_trail", True)
-        trail_act         = params.get("trail_act", 20)
-        trail_off         = params.get("trail_off", 4)
-        min_bars_between  = params.get("min_bars_between", 3)
-        allow_long        = params.get("allow_long", True)
-        allow_short       = params.get("allow_short", True)
-        block_same_bar_rev = params.get("block_same_bar_rev", True)
-
-        sl_dist        = stop_ticks   * self.tick_size
-        tp_dist        = target_ticks * self.tick_size
-        act_dist       = trail_act    * self.tick_size
-        off_dist       = trail_off    * self.tick_size
-        slip_dist      = self.slippage_ticks      * self.tick_size
-        stop_slip_dist = self.stop_slippage_ticks * self.tick_size
-
-        trades, trade_regimes = [], []
-        in_trade      = False
-        trade_dir     = 0
-        entry_p       = sl_p = tp_p = 0.0
-        trail_active  = False
-        last_exit     = -999
-        last_exit_dir = 0
-        entry_bar     = 0
-
-        for i in range(len(close)):
-            # ── Exit ─────────────────────────────────────────────────────────
-            if in_trade:
-                exit_pnl, triggered = 0.0, False
-                if trade_dir == 1:
-                    if use_trail and not trail_active and high[i] >= entry_p + act_dist:
-                        trail_active, sl_p = True, high[i] - off_dist
-                    if trail_active:
-                        sl_p = max(sl_p, high[i] - off_dist)
-                    if low[i] <= sl_p:
-                        exit_pnl, triggered = (sl_p - stop_slip_dist) - entry_p, True
-                    elif high[i] >= tp_p:
-                        exit_pnl, triggered = tp_p - entry_p, True
-                else:
-                    if use_trail and not trail_active and low[i] <= entry_p - act_dist:
-                        trail_active, sl_p = True, low[i] + off_dist
-                    if trail_active:
-                        sl_p = min(sl_p, low[i] + off_dist)
-                    if high[i] >= sl_p:
-                        exit_pnl, triggered = entry_p - (sl_p + stop_slip_dist), True
-                    elif low[i] <= tp_p:
-                        exit_pnl, triggered = entry_p - tp_p, True
-
-                if triggered:
-                    commission_rt = (self.commission_per_side * 2) / (entry_p * self.contract_multiplier)
-                    trades.append(exit_pnl / entry_p - commission_rt)
-                    trade_regimes.append(regimes[entry_bar])
-                    last_exit_dir = trade_dir
-                    in_trade      = False
-                    last_exit     = i
-                    continue
-
-            # ── Entry (execution guards only — signals already filtered) ──────
-            if not in_trade and (i - last_exit >= min_bars_between):
-                same_bar  = (i == last_exit) and block_same_bar_rev
-                can_long  = allow_long  and bool(buy[i])  and not (same_bar and last_exit_dir == 1)
-                can_short = allow_short and bool(short[i]) and not (same_bar and last_exit_dir == -1)
-
-                if can_long:
-                    entry_p = close[i] + slip_dist if self.order_type != "limit" else close[i]
-                    in_trade, trade_dir, trail_active = True, 1, False
-                elif can_short:
-                    entry_p = close[i] - slip_dist if self.order_type != "limit" else close[i]
-                    in_trade, trade_dir, trail_active = True, -1, False
-
-                if in_trade:
-                    sl_p      = entry_p - sl_dist if trade_dir == 1 else entry_p + sl_dist
-                    tp_p      = entry_p + tp_dist if trade_dir == 1 else entry_p - tp_dist
-                    entry_bar = i
-
-        if not trades:
-            return {'sharpe': 0.0, 'wr': 0, 'count': 0, 'trades': np.array([]), 'regimes': []}
-        t_arr  = np.array(trades)
-        sharpe = (np.mean(t_arr) / np.std(t_arr)) * np.sqrt(252) if np.std(t_arr) > 0 else 0
-        return {'sharpe': sharpe, 'wr': np.mean(t_arr > 0), 'count': len(t_arr), 'trades': t_arr, 'regimes': trade_regimes}
-
-    def _precompute_filters(self, df, params):
-        """
-        Pre-computes all Pine Script entry filter arrays for a given df slice and param set.
-        Filters: session window, TDV volume gate, HA wick quality, same-bar reversal.
-        These are computed once per backtest call and applied in the simulation loop.
-        """
-        n = len(df)
-        open_ = df['open'].values if 'open' in df.columns else df['close'].values
-        high, low, close = df['high'].values, df['low'].values, df['close'].values
-
-        # --- Filter 1: Session Time Window ---
-        in_window = np.ones(n, dtype=bool)
-        trade_eth = params.get('trade_eth', False)
-        if not trade_eth and 'time' in df.columns:
-            try:
-                ts = pd.to_datetime(df['time'].values, unit='s', utc=True)
-                ts_et = ts.tz_convert('America/New_York')
-                hours = ts_et.hour + ts_et.minute / 60.0
-                in_window = (hours >= 9.0) & (hours < 16.0)
-            except Exception:
-                pass  # If timezone conversion fails, allow all bars
-
-        # --- Filter 2: TDV Volume Gate State Machine ---
-        vol_ma_len = max(1, int(params.get('tdv_vol_ma_len', 12)))
-        smooth_bars = max(1, int(params.get('tdv_smoothBars', 4)))
-        min_body_pct = params.get('tdv_min_body_pct', 20)
-
-        candle_range = high - low
-        body_pct = np.where(candle_range > 0, np.abs(close - open_) / candle_range * 100.0, 0.0)
-        is_weak = body_pct < min_body_pct
-
-        bvol = np.where(candle_range > 0, df['volume'].values * (close - low) / candle_range, df['volume'].values / 2)
-        svol = np.where(candle_range > 0, df['volume'].values * (high - close) / candle_range, df['volume'].values / 2)
-
-        bvol_sum = pd.Series(bvol).rolling(vol_ma_len, min_periods=1).sum().values
-        svol_sum = pd.Series(svol).rolling(vol_ma_len, min_periods=1).sum().values
-        raw_buy = bvol_sum > svol_sum
-
-        # Stateful locked state machine (mirrors Pine Script TDV logic)
-        sig = raw_buy.astype(int)
-        locked = np.ones(n, dtype=int)
-        streak = np.zeros(n, dtype=int)
-        for j in range(1, n):
-            if is_weak[j] and sig[j] != sig[j-1]:
-                sig[j] = sig[j-1]   # penalize weak-body state change: revert signal
-                
-            if sig[j] == sig[j-1]:
-                streak[j] = streak[j-1] + 1
-            else:
-                streak[j] = 1
-                
-            locked[j] = sig[j] if streak[j] >= smooth_bars else locked[j-1]
-
-        tdv_pos = locked == 1   # volume bullish
-        tdv_neg = locked == 0   # volume bearish
-
-        # --- Filter 3: HA Wick Quality Filter ---
-        wick_long_ok = np.ones(n, dtype=bool)
-        wick_short_ok = np.ones(n, dtype=bool)
-        require_single_wick = params.get('require_single_wick', True)
-        if require_single_wick and 'open' in df.columns:
-            try:
-                ha = calc_heikin_ashi(df)
-                ha_body = (ha['ha_close'] - ha['ha_open']).abs().values
-                ha_upper = (ha['ha_high'] - np.maximum(ha['ha_open'].values, ha['ha_close'].values)).values
-                ha_lower = (np.minimum(ha['ha_open'].values, ha['ha_close'].values) - ha['ha_low'].values).values
-                wick_long_ok = ha_upper <= ha_body
-                wick_short_ok = ha_lower <= ha_body
-            except Exception:
-                pass
-
-        # --- Filter 4: Session Sweep Filter ---
-        use_sweep = params.get('use_sweep_filter', False)
-        sweep_lookback = int(params.get('sweep_lookback', 20))
-        sweep_long_ok = np.ones(n, dtype=bool)
-        sweep_short_ok = np.ones(n, dtype=bool)
-        
-        if use_sweep and 'time' in df.columns:
-            try:
-                ts = pd.to_datetime(df['time'].values, unit='s', utc=True).tz_convert('America/New_York')
-                hours = ts.hour + ts.minute / 60.0
-                
-                in_asia = (hours >= 19.0) | (hours < 2.0)
-                in_lon = (hours >= 2.0) & (hours < 8.0)
-                in_nyam = (hours >= 9.0) & (hours < 16.0)
-                in_nypm = (hours >= 13.5) & (hours < 15.0)
-                
-                asia_h, asia_l, lon_h, lon_l, nyam_h, nyam_l, nypm_h, nypm_l = [np.nan]*8
-                ar_h, ar_l, lr_h, lr_l, amr_h, amr_l, pmr_h, pmr_l = [np.nan]*8
-                
-                bull_sweep = np.zeros(n, dtype=bool)
-                bear_sweep = np.zeros(n, dtype=bool)
-                
-                for i in range(1, n):
-                    if in_asia[i] and not in_asia[i-1]: ar_h, ar_l = high[i], low[i]
-                    elif in_asia[i]: ar_h, ar_l = max(ar_h, high[i]) if not np.isnan(ar_h) else high[i], min(ar_l, low[i]) if not np.isnan(ar_l) else low[i]
-                    if in_asia[i-1] and not in_asia[i]: asia_h, asia_l = ar_h, ar_l
-                        
-                    if in_lon[i] and not in_lon[i-1]: lr_h, lr_l = high[i], low[i]
-                    elif in_lon[i]: lr_h, lr_l = max(lr_h, high[i]) if not np.isnan(lr_h) else high[i], min(lr_l, low[i]) if not np.isnan(lr_l) else low[i]
-                    if in_lon[i-1] and not in_lon[i]: lon_h, lon_l = lr_h, lr_l
-                        
-                    if in_nyam[i] and not in_nyam[i-1]: amr_h, amr_l = high[i], low[i]
-                    elif in_nyam[i]: amr_h, amr_l = max(amr_h, high[i]) if not np.isnan(amr_h) else high[i], min(amr_l, low[i]) if not np.isnan(amr_l) else low[i]
-                    if in_nyam[i-1] and not in_nyam[i]: nyam_h, nyam_l = amr_h, amr_l
-                        
-                    if in_nypm[i] and not in_nypm[i-1]: pmr_h, pmr_l = high[i], low[i]
-                    elif in_nypm[i]: pmr_h, pmr_l = max(pmr_h, high[i]) if not np.isnan(pmr_h) else high[i], min(pmr_l, low[i]) if not np.isnan(pmr_l) else low[i]
-                    if in_nypm[i-1] and not in_nypm[i]: nypm_h, nypm_l = pmr_h, pmr_l
-                        
-                    c, l, h_p = close[i], low[i], high[i]
-                    is_bull = False
-                    is_bear = False
-                    
-                    if not np.isnan(asia_l) and l <= asia_l and c > asia_l: is_bull = True
-                    if not np.isnan(lon_l) and l <= lon_l and c > lon_l: is_bull = True
-                    if not np.isnan(nyam_l) and l <= nyam_l and c > nyam_l: is_bull = True
-                    if not np.isnan(nypm_l) and l <= nypm_l and c > nypm_l: is_bull = True
-                    
-                    if not np.isnan(asia_h) and h_p >= asia_h and c < asia_h: is_bear = True
-                    if not np.isnan(lon_h) and h_p >= lon_h and c < lon_h: is_bear = True
-                    if not np.isnan(nyam_h) and h_p >= nyam_h and c < nyam_h: is_bear = True
-                    if not np.isnan(nypm_h) and h_p >= nypm_h and c < nypm_h: is_bear = True
-                    
-                    bull_sweep[i] = is_bull
-                    bear_sweep[i] = is_bear
-                    
-                def bars_since(cond):
-                    idx = np.arange(len(cond))
-                    last_true = pd.Series(np.where(cond, idx, np.nan)).ffill()
-                    return (idx - last_true).fillna(999).values
-                    
-                sweep_long_ok = bars_since(bull_sweep) <= sweep_lookback
-                sweep_short_ok = bars_since(bear_sweep) <= sweep_lookback
-                
-            except Exception as e:
-                pass
-
-        return {
-            'in_window': in_window,
-            'tdv_pos': tdv_pos,
-            'tdv_neg': tdv_neg,
-            'wick_long_ok': wick_long_ok,
-            'wick_short_ok': wick_short_ok,
-            'sweep_long_ok': sweep_long_ok,
-            'sweep_short_ok': sweep_short_ok,
-        }
-
-    def run_backtest(self, df: pd.DataFrame, buy: np.ndarray, short: np.ndarray, params: dict) -> dict:
+    def run_backtest(self, df: pd.DataFrame, buy: np.ndarray, short: np.ndarray, params: dict, filter_masks: dict = None) -> dict:
         """
         Simulates strategy execution with full Pine Script entry filter parity.
         Applies: session window, TDV volume gate, HA wick filter, same-bar reversal block,
@@ -572,15 +254,17 @@ class QuantEngine:
         slip_dist      = self.slippage_ticks       * self.tick_size
         stop_slip_dist = self.stop_slippage_ticks  * self.tick_size
 
-        # Pre-compute all entry filters (the 5 missing Pine Script conditions)
-        filt = self._precompute_filters(df, params)
-        in_window     = filt['in_window']
-        tdv_pos       = filt['tdv_pos']
-        tdv_neg       = filt['tdv_neg']
-        wick_long_ok  = filt['wick_long_ok']
-        wick_short_ok = filt['wick_short_ok']
-        sweep_long_ok = filt.get('sweep_long_ok', np.ones(len(df), dtype=bool))
-        sweep_short_ok = filt.get('sweep_short_ok', np.ones(len(df), dtype=bool))
+        if filter_masks is None:
+            n = len(df)
+            filter_masks = {k: np.ones(n, dtype=bool) for k in ['in_window', 'tdv_pos', 'tdv_neg', 'wick_long_ok', 'wick_short_ok', 'sweep_long_ok', 'sweep_short_ok']}
+
+        in_window     = filter_masks.get('in_window', np.ones(len(df), dtype=bool))
+        tdv_pos       = filter_masks.get('tdv_pos', np.ones(len(df), dtype=bool))
+        tdv_neg       = filter_masks.get('tdv_neg', np.ones(len(df), dtype=bool))
+        wick_long_ok  = filter_masks.get('wick_long_ok', np.ones(len(df), dtype=bool))
+        wick_short_ok = filter_masks.get('wick_short_ok', np.ones(len(df), dtype=bool))
+        sweep_long_ok = filter_masks.get('sweep_long_ok', np.ones(len(df), dtype=bool))
+        sweep_short_ok = filter_masks.get('sweep_short_ok', np.ones(len(df), dtype=bool))
 
         trades, trade_regimes = [], []
         in_trade = False
@@ -743,7 +427,8 @@ class QuantEngine:
 
             # OOS Validation
             b_o, s_o = self.generate_signals(df_oos, best_fold_params)
-            res = self.run_backtest(df_oos, b_o, s_o, best_fold_params)
+            f_o = compile_filters(df_oos, best_fold_params, self.recipe.get("filters", []))
+            res = self.run_backtest(df_oos, b_o, s_o, best_fold_params, filter_masks=f_o)
             fold_oos_sharpes.append(res['sharpe'])
             
             if res['count'] > 0:
@@ -783,9 +468,11 @@ class QuantEngine:
                 if pr['type'] == 'int': p[name] = trial.suggest_int(name, min_val, max_val)
                 elif pr['type'] == 'float': p[name] = trial.suggest_float(name, float(min_val), float(max_val))
                 elif pr['type'] == 'bool': p[name] = trial.suggest_categorical(name, [True, False])
+                elif pr['type'] == 'string': p[name] = pr.get('default')
             
             b, s = self.generate_signals(df_is, p)
-            res = self.run_backtest(df_is, b, s, p)
+            f_masks = compile_filters(df_is, p, self.recipe.get("filters", []))
+            res = self.run_backtest(df_is, b, s, p, filter_masks=f_masks)
             return self._compute_utility(res['trades'], p.get("stop_ticks", 80), p.get("target_ticks", 300))
 
         study = optuna.create_study(direction='maximize')
@@ -836,81 +523,7 @@ class QuantEngine:
             sim_returns.append(c_r[-1] - 1)
         return float(np.percentile(sim_max_dds, 95)), float(np.sum(np.array(sim_returns) <= actual_cum) / simulations * 100)
 
-    def _logic_trama_ha(self, df: pd.DataFrame, params: dict):
-        """Hardcoded TRAMA + HA logic with Regime Filter and HA Rising/Falling logic."""
-        from indicator_lib import calc_trama, calc_heikin_ashi
-        t_f = int(params.get("trama_fast_len", 13))
-        t_m = int(params.get("trama_med_len", 28))
-        t_s = int(params.get("trama_slow_len", 40))
-        tf = calc_trama(df['high'], df['low'], df['close'], t_f)
-        tm = calc_trama(df['high'], df['low'], df['close'], t_m)
-        ts = calc_trama(df['high'], df['low'], df['close'], t_s)
-        
-        ha = calc_heikin_ashi(df)
-        ha_close = ha['ha_close']
-        
-        above = (ha_close > tf) & (ha_close > tm) & (ha_close > ts)
-        below = (ha_close < tf) & (ha_close < tm) & (ha_close < ts)
-        
-        use_regime = params.get("use_regime_filter", False)
-        cross_lb = int(params.get("cross_lookback", 4))
-        p_bars = int(params.get("prior_regime_bars", 3))
-        p_window = int(params.get("prior_regime_window", 20))
-        
-        # Calculate regime streak (+1 if above, -1 if below, else keep previous)
-        n = len(df)
-        above_np = above.values
-        below_np = below.values
-        regime_streak = np.zeros(n, dtype=int)
-        for i in range(1, n):
-            if above_np[i]:
-                regime_streak[i] = regime_streak[i-1] + 1 if regime_streak[i-1] > 0 else 1
-            elif below_np[i]:
-                regime_streak[i] = regime_streak[i-1] - 1 if regime_streak[i-1] < 0 else -1
-            else:
-                regime_streak[i] = regime_streak[i-1]
-        
-        regime_streak_s = pd.Series(regime_streak, index=df.index)
-        regime_streak_prev = regime_streak_s.shift(1).fillna(0)
-        
-        was_clearly_bear = regime_streak_prev.rolling(p_window).min() <= -p_bars
-        was_clearly_bull = regime_streak_prev.rolling(p_window).max() >= p_bars
-        
-        cross_to_bull_simple = above & ~above.shift(1).fillna(False)
-        cross_to_bear_simple = below & ~below.shift(1).fillna(False)
-        
-        true_cross_to_bull = (cross_to_bull_simple & was_clearly_bear) if use_regime else cross_to_bull_simple
-        true_cross_to_bear = (cross_to_bear_simple & was_clearly_bull) if use_regime else cross_to_bear_simple
-        
-        def bars_since(condition):
-            idx = np.arange(len(condition))
-            last_true = pd.Series(np.where(condition, idx, np.nan), index=condition.index).ffill()
-            return (idx - last_true).fillna(999)
-            
-        bars_since_rev_bull = bars_since(true_cross_to_bull)
-        bars_since_rev_bear = bars_since(true_cross_to_bear)
-        
-        fresh_reversal_long = bars_since_rev_bull <= cross_lb
-        fresh_reversal_short = bars_since_rev_bear <= cross_lb
-        
-        ha_green = (ha['ha_close'] > ha['ha_open']).astype(int)
-        ha_red = (ha['ha_close'] < ha['ha_open']).astype(int)
-        
-        ha_stack_min = int(params.get("ha_stack_min", 2))
-        
-        l_s_streak = ha_green.groupby(ha_green.ne(ha_green.shift()).cumsum()).cumsum()
-        s_s_streak = ha_red.groupby(ha_red.ne(ha_red.shift()).cumsum()).cumsum()
-        
-        req_rising = params.get("require_rising_high", False)
-        req_falling = params.get("require_falling_low", False)
-        
-        rising_highs = (ha['ha_high'].diff(1) >= 0).rolling(max(1, ha_stack_min - 1)).min().fillna(0).astype(bool)
-        falling_lows = (ha['ha_low'].diff(1) <= 0).rolling(max(1, ha_stack_min - 1)).min().fillna(0).astype(bool)
-            
-        l_s = (l_s_streak >= ha_stack_min) & (rising_highs if req_rising else True)
-        s_s = (s_s_streak >= ha_stack_min) & (falling_lows if req_falling else True)
-        
-        return (fresh_reversal_long & l_s & above).values, (fresh_reversal_short & s_s & below).values
+
 
 def run_quant(project_dir, recipe, n_trials=30):
     """Entry point for the quant engine."""

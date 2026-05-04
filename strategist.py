@@ -13,6 +13,7 @@ class StrategistVerdict:
     rationale: str = ""
     required_code_changes: list[str] = field(default_factory=list)
     market_context: str = ""
+    llm_assessment: str = ""
 
 class Strategist:
     """Synthesizes logic and quantitative findings into a final strategy assessment."""
@@ -59,48 +60,38 @@ class Strategist:
                 client = OpenAI(base_url=config.llm_base_url, api_key="lm-studio")
 
             prompt = f"""
-You are the Strategist agent for Optimization Engine.
-Synthesize the findings from the Logic Critic and the Quant Engine to provide a final strategy assessment.
+You are the Lead Strategist for a high-grade quantitative trading lab.
+Your job is to provide a "human-like" executive assessment of the strategy based on the backtest results and static code analysis.
 
 Critic Report:
 - Repaint Risk: {self.critic_report.repaint_risk_score}/10
 - Issues: {json.dumps([{'sev': i.severity, 'desc': i.description} for i in self.critic_report.issues])}
 
-Quant Report (5-Fold Walk Forward Analysis):
-- Data Found: {self.quant_report.data_found}
+Quant Report:
 - Avg IS Sharpe: {self.quant_report.in_sample_sharpe:.2f}
 - Avg OOS Sharpe: {self.quant_report.oos_sharpe:.2f}
 - OOS Sortino: {getattr(self.quant_report, 'sortino', 0.0):.2f}
-- Max Drawdown: {getattr(self.quant_report, 'max_drawdown', 0.0) * 100:.2f}%
-- WFA Consistency Score: {self.quant_report.wfa_consistency_score:.0f}% of periods were profitable
+- WFA Consistency: {self.quant_report.wfa_consistency_score:.0f}%
 - Overfitting Risk: {self.quant_report.overfitting_risk}
+- Execution Assumptions: {getattr(self.quant_report, 'slippage_ticks_used', 1)} ticks slippage, ${getattr(self.quant_report, 'commission_per_rt', 4.10):.2f} RT commission.
 
-Historical Regime Performance:{regime_str}
-
-Monte Carlo Stress Test (10,000 Simulations):
-- 95th Percentile Max Drawdown: {self.quant_report.mc_max_dd_95 * 100:.2f}%
-- Luck Factor: {self.quant_report.mc_luck_factor:.0f}th percentile (Lower is better; 99th means we got extremely lucky vs median path)
-
-Current Market Context (REAL-TIME):
-- Regime: {self.market_snapshot.get('regime', 'Unknown')}
-- Breadth: {self.market_snapshot.get('breadth', 'Unknown')}
-
-Based on this, perform a deep market reality check. 
-Contrast the technical backtest performance against the structural logic integrity AND the current real-time market regime. 
-Output a 3-sentence narrative explaining if this strategy would survive a 'Black Swan' event or if it's merely 'curve-fitted' to the noise, and how it might perform in the CURRENT market context.
+Based on this data, write a 2-3 paragraph "Hard Truth" (or "Executive Commendation" if it passed).
+Explain the *what* and the *why*. If it collapsed out-of-sample, explain *why* (e.g., "The strategy is a fragile edge that cannot survive real-world execution costs like slippage..."). If it's repainting, call out the illusion of the backtester. 
+Be brutally honest, professional, and insightful. Speak directly to the strategy's viability in the live market.
 """
             from llm_utils import call_llm_with_retry
             llm_narrative = call_llm_with_retry(
                 client, 
                 messages=[
-                    {"role": "system", "content": "You are a lead quantitative strategist."},
+                    {"role": "system", "content": "You are a lead quantitative strategist delivering a final assessment."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3
+                temperature=0.4
             )
             
             if llm_narrative:
-                self.verdict.rationale += f"\n\nLLM Synthesis:\n{llm_narrative}"
+                self.verdict.llm_assessment = llm_narrative
+
         except Exception as e:
             print(f"[OptiEngine - Strategist] LLM synthesis failed: {e}")
 

@@ -20,7 +20,16 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ---
 
-## 1. Logic Critic Audit
+"""
+    if getattr(verdict, "llm_assessment", ""):
+        dossier_content += f"""## 🤖 Lead Strategist Assessment
+{verdict.llm_assessment}
+
+---
+
+"""
+    
+    dossier_content += f"""## 1. Logic Critic Audit
 **Repaint Risk Score:** {critic_report.repaint_risk_score}/10
 
 ### Identified Issues

@@ -29,7 +29,6 @@ def main():
     parser.add_argument("--project-dir", type=str, required=True, help="Path to the Project directory")
     parser.add_argument("--trials", type=int, default=200, help="Number of Optuna optimization trials")
     parser.add_argument("--no-llm", action="store_true", help="Force disable LLM")
-    parser.add_argument("--use-cached-profile", action="store_true", help="Use cached strategy_profile.json")
     parser.add_argument("--test", action="store_true", help="Run internal unit tests before starting")
     
     args = parser.parse_args()
@@ -81,8 +80,7 @@ def main():
 
     # Step 3: Developer Agent
     print("\n[Step 3/7] Agent 1: Developer extracting strategy recipe...")
-    dev_client = vram.load_agent("developer")
-    pine_text, recipe = run_developer(args.project_dir, snapshot=snapshot, client=dev_client)
+    recipe = run_developer(pine_text, snapshot=snapshot)
 
     # Step 4: Logic Critic
     print("\n[Step 4/7] Agent 2: Logic Critic auditing Pine Script...")

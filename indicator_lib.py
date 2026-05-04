@@ -52,6 +52,27 @@ def calc_wma(close: pd.Series, length: int) -> pd.Series:
     weights = np.arange(1, length + 1)
     return close.rolling(length).apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
 
+def calc_hma(close: pd.Series, length: int) -> pd.Series:
+    half_length = int(length / 2)
+    sqrt_length = int(np.sqrt(length))
+    wmaf = calc_wma(close, half_length)
+    wmas = calc_wma(close, length)
+    return calc_wma(wmaf * 2 - wmas, sqrt_length)
+
+def calc_rma(close: pd.Series, length: int) -> pd.Series:
+    return close.ewm(alpha=1/length, adjust=False).mean()
+
+def get_ma(source: pd.Series, ma_type: str, length: int, volume: pd.Series = None) -> pd.Series:
+    t = ma_type.lower()
+    if length <= 1: return source
+    if t == 'sma': return calc_sma(source, length)
+    elif t == 'ema': return calc_ema(source, length)
+    elif t == 'hma': return calc_hma(source, length)
+    elif t == 'rma': return calc_rma(source, length)
+    elif t == 'wma': return calc_wma(source, length)
+    elif t == 'vwma': return (source * volume).rolling(length).sum() / volume.rolling(length).sum() if volume is not None else calc_sma(source, length)
+    return source
+
 def calc_vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, length: int = 20) -> pd.Series:
     typ_price = (high + low + close) / 3
     # Rolling VWAP as a generic proxy
@@ -143,6 +164,150 @@ def calc_cross_above(a: pd.Series, b: pd.Series) -> pd.Series:
 def calc_cross_below(a: pd.Series, b: pd.Series) -> pd.Series:
     return (a < b) & (a.shift(1) >= b.shift(1))
 
+def calc_rsi_exhaustion_signals(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
+    rsi_len = int(kwargs.get("rsiLen", 14))
+    rsi_sma_len = int(kwargs.get("rsiSmaLength", 14))
+    rsi_ob = int(kwargs.get("rsiObLevel", 68))
+    rsi_os = int(kwargs.get("rsiOsLevel", 32))
+    rsi_lookback = int(kwargs.get("rsiLookback", 5))
+    threshold = int(kwargs.get("threshold", 30))
+    short_len = int(kwargs.get("shortLength", 21))
+    long_len = int(kwargs.get("longLength", 112))
+    cooldown = int(kwargs.get("cooldown", 30))
+    smooth_type = kwargs.get("smoothType", "ema")
+    formula = kwargs.get("formula", "Standard (2 Period)")
+    short_smooth_len = int(kwargs.get("shortSmoothingLength", 7))
+    long_smooth_len = int(kwargs.get("longSmoothingLength", 3))
+    avg_ma_len = int(kwargs.get("average_ma_len", 3))
+    
+    close = df['close']
+    vol = df.get('volume')
+    rsi = calc_rsi(close, rsi_len)
+    rsi_sma = calc_sma(rsi, rsi_sma_len)
+    
+    def percent_r(length):
+        highest = close.rolling(length).max()
+        lowest = close.rolling(length).min()
+        rng = (highest - lowest).clip(lower=1e-10)
+        return 100.0 * (close - highest) / rng
+        
+    s_pr = percent_r(short_len)
+    l_pr = percent_r(long_len)
+    
+    if short_smooth_len > 1:
+        s_pr = get_ma(s_pr, smooth_type, short_smooth_len, vol)
+    if long_smooth_len > 1:
+        l_pr = get_ma(l_pr, smooth_type, long_smooth_len, vol)
+        
+    if formula == "Average":
+        avg_pr = (s_pr + l_pr) / 2
+        if avg_ma_len > 1:
+            avg_pr = get_ma(avg_pr, smooth_type, avg_ma_len, vol)
+        overbought = avg_pr >= -threshold
+        oversold = avg_pr <= -100 + threshold
+    else:
+        overbought = (s_pr >= -threshold) & (l_pr >= -threshold)
+        oversold = (s_pr <= -100 + threshold) & (l_pr <= -100 + threshold)
+    
+    rsi_cross_above = (rsi > rsi_sma) & (rsi.shift(1) <= rsi_sma.shift(1))
+    rsi_cross_below = (rsi < rsi_sma) & (rsi.shift(1) >= rsi_sma.shift(1))
+    
+    was_os = (rsi <= rsi_os).rolling(rsi_lookback + 1, min_periods=1).max().astype(bool)
+    was_ob = (rsi >= rsi_ob).rolling(rsi_lookback + 1, min_periods=1).max().astype(bool)
+    
+    raw_long = (rsi_cross_above & was_os & oversold).values
+    raw_short = (rsi_cross_below & was_ob & overbought).values
+    
+    n = len(df)
+    buy = np.zeros(n, dtype=bool)
+    sell = np.zeros(n, dtype=bool)
+    last_long_bar = -(cooldown + 1)
+    last_short_bar = -(cooldown + 1)
+    for i in range(n):
+        if raw_long[i] and (i - last_long_bar) >= cooldown:
+            buy[i] = True
+            last_long_bar = i
+        if raw_short[i] and (i - last_short_bar) >= cooldown:
+            sell[i] = True
+            last_short_bar = i
+            
+    return pd.DataFrame({'buy': buy, 'sell': sell}, index=df.index)
+
+def calc_trama_ha_signals(df: pd.DataFrame, **kwargs) -> pd.DataFrame:
+    t_f = int(kwargs.get("trama_fast_len", 13))
+    t_m = int(kwargs.get("trama_med_len", 28))
+    t_s = int(kwargs.get("trama_slow_len", 40))
+    tf = calc_trama(df['high'], df['low'], df['close'], t_f)
+    tm = calc_trama(df['high'], df['low'], df['close'], t_m)
+    ts = calc_trama(df['high'], df['low'], df['close'], t_s)
+    
+    ha = calc_heikin_ashi(df)
+    ha_close = ha['ha_close']
+    
+    above = (ha_close > tf) & (ha_close > tm) & (ha_close > ts)
+    below = (ha_close < tf) & (ha_close < tm) & (ha_close < ts)
+    
+    use_regime = kwargs.get("use_regime_filter", False)
+    cross_lb = int(kwargs.get("cross_lookback", 4))
+    p_bars = int(kwargs.get("prior_regime_bars", 3))
+    p_window = int(kwargs.get("prior_regime_window", 20))
+    
+    n = len(df)
+    above_np = above.values
+    below_np = below.values
+    regime_streak = np.zeros(n, dtype=int)
+    for i in range(1, n):
+        if above_np[i]:
+            regime_streak[i] = regime_streak[i-1] + 1 if regime_streak[i-1] > 0 else 1
+        elif below_np[i]:
+            regime_streak[i] = regime_streak[i-1] - 1 if regime_streak[i-1] < 0 else -1
+        else:
+            regime_streak[i] = regime_streak[i-1]
+            
+    regime_streak_s = pd.Series(regime_streak, index=df.index)
+    regime_streak_prev = regime_streak_s.shift(1).fillna(0)
+    
+    was_clearly_bear = regime_streak_prev.rolling(p_window).min() <= -p_bars
+    was_clearly_bull = regime_streak_prev.rolling(p_window).max() >= p_bars
+    
+    cross_to_bull_simple = above & ~above.shift(1).fillna(False)
+    cross_to_bear_simple = below & ~below.shift(1).fillna(False)
+    
+    true_cross_to_bull = (cross_to_bull_simple & was_clearly_bear) if use_regime else cross_to_bull_simple
+    true_cross_to_bear = (cross_to_bear_simple & was_clearly_bull) if use_regime else cross_to_bear_simple
+    
+    def bars_since(condition):
+        idx = np.arange(len(condition))
+        last_true = pd.Series(np.where(condition, idx, np.nan), index=condition.index).ffill()
+        return (idx - last_true).fillna(999)
+        
+    bars_since_rev_bull = bars_since(true_cross_to_bull)
+    bars_since_rev_bear = bars_since(true_cross_to_bear)
+    
+    fresh_reversal_long = bars_since_rev_bull <= cross_lb
+    fresh_reversal_short = bars_since_rev_bear <= cross_lb
+    
+    ha_green = (ha['ha_close'] > ha['ha_open']).astype(int)
+    ha_red = (ha['ha_close'] < ha['ha_open']).astype(int)
+    
+    ha_stack_min = int(kwargs.get("ha_stack_min", 2))
+    
+    l_s_streak = ha_green.groupby(ha_green.ne(ha_green.shift()).cumsum()).cumsum()
+    s_s_streak = ha_red.groupby(ha_red.ne(ha_red.shift()).cumsum()).cumsum()
+    
+    req_rising = kwargs.get("require_rising_high", False)
+    req_falling = kwargs.get("require_falling_low", False)
+    
+    rising_highs = (ha['ha_high'].diff(1) >= 0).rolling(max(1, ha_stack_min - 1)).min().fillna(0).astype(bool)
+    falling_lows = (ha['ha_low'].diff(1) <= 0).rolling(max(1, ha_stack_min - 1)).min().fillna(0).astype(bool)
+        
+    l_s = (l_s_streak >= ha_stack_min) & (rising_highs if req_rising else True)
+    s_s = (s_s_streak >= ha_stack_min) & (falling_lows if req_falling else True)
+    
+    buy = fresh_reversal_long & l_s & above
+    sell = fresh_reversal_short & s_s & below
+    return pd.DataFrame({'buy': buy, 'sell': sell}, index=df.index)
+
 INDICATOR_CATALOG = {
     "EMA": calc_ema,
     "SMA": calc_sma,
@@ -162,5 +327,7 @@ INDICATOR_CATALOG = {
     "CROSS_ABOVE": calc_cross_above,
     "CROSS_BELOW": calc_cross_below,
     "TRAMA": calc_trama,
-    "HA": calc_heikin_ashi
+    "HA": calc_heikin_ashi,
+    "RSI_EXHAUSTION_SIGNALS": calc_rsi_exhaustion_signals,
+    "TRAMA_HA_SIGNALS": calc_trama_ha_signals
 }

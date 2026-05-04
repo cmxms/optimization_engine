@@ -22,8 +22,9 @@ class FailureAnalyst:
         oos_sharpe = self.quant_report.get('oos_sharpe', 0.0)
         is_sharpe = self.quant_report.get('in_sample_sharpe', 0.0)
         
-        # Criteria for "Unexpected Failure"
-        if oos_sharpe > 0.5:
+        # Criteria for "Unexpected Failure" (Massive IS to OOS degradation or absolute failure)
+        is_failure = oos_sharpe < 0.5 or (is_sharpe > 1.0 and oos_sharpe < is_sharpe * 0.3)
+        if not is_failure:
             return # Not a failure
             
         print("[OptiEngine - Failure Analyst] Analyzing unexpected backtest failure...")

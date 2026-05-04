@@ -14,9 +14,11 @@ Usage:
 """
 
 import time
-import lmstudio as lms
 from openai import OpenAI
 from config import config
+
+# Global placeholder for lazy loading
+lms = None
 
 # Agent → Model Mapping
 # Update model keys to match the exact model filenames in your LM Studio library.
@@ -31,6 +33,12 @@ class VRAMManager:
         self._current_handle = None
         self._current_agent = None
         self._current_resolved_key = None
+
+    def _ensure_lms(self):
+        global lms
+        if lms is None:
+            import lmstudio
+            lms = lmstudio
 
     def _unload_current(self):
         """Explicitly unload the currently active model to free VRAM."""
@@ -65,6 +73,7 @@ class VRAMManager:
         # 2. Search local library for the best match
         print(f"  [VRAM] Searching local library for '{search_kw}' model...")
         try:
+            self._ensure_lms()
             downloaded = lms.list_downloaded_models("llm")
             # Filter for keyword and prefer Q4/Q3 if multiple exist
             matches = [m.model_key for m in downloaded if search_kw.lower() in m.model_key.lower()]
@@ -88,6 +97,7 @@ class VRAMManager:
             self._unload_current()
             print(f"  [VRAM] Loading '{agent_name}' model...")
             try:
+                self._ensure_lms()
                 self._current_handle = lms.llm(model_key)
                 self._current_agent = agent_name
                 self._current_resolved_key = model_key

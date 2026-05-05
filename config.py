@@ -31,6 +31,10 @@ def load_config() -> OptimizationConfig:
         "critic": os.getenv("LLM_MODEL_CRITIC", "deepseek"),
         "developer": os.getenv("LLM_MODEL_DEVELOPER", "qwen"),
         "strategist": os.getenv("LLM_MODEL_STRATEGIST", "mistral"),
+        "quant": os.getenv("LLM_MODEL_QUANT", "deepseek"),
+        "catfish": os.getenv("LLM_MODEL_CATFISH", "qwen"),
+        "operator": os.getenv("LLM_MODEL_OPERATOR", "mistral"),
+        "transpiler": os.getenv("LLM_MODEL_TRANSPILER", "qwen"),
     }
 
     return OptimizationConfig(

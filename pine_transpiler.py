@@ -216,10 +216,22 @@ class PineTranspiler:
         """Dynamically loads the generated Python code and returns the callable."""
         try:
             module = types.ModuleType(f"_transpiler_temp_{expected_name}")
-            module.__dict__['pd'] = pd
-            module.__dict__['np'] = np
-            exec(compile(python_code, f"<transpiler:{expected_name}>", 'exec'), module.__dict__)
-            fn = getattr(module, expected_name, None)
+            # Sandboxed execution environment
+            safe_globals = {
+                'pd': pd,
+                'np': np,
+                '__builtins__': {
+                    'print': print, 'len': len, 'range': range, 'enumerate': enumerate,
+                    'zip': zip, 'abs': abs, 'min': min, 'max': max, 'sum': sum,
+                    'int': int, 'float': float, 'str': str, 'list': list, 'dict': dict,
+                    'set': set, 'bool': bool, 'isinstance': isinstance, 'any': any,
+                    'all': all, 'getattr': getattr, 'hasattr': hasattr, 'type': type,
+                    'round': round, 'Exception': Exception, 'ValueError': ValueError,
+                    'TypeError': TypeError, 'RuntimeError': RuntimeError,
+                }
+            }
+            exec(compile(python_code, f"<transpiler:{expected_name}>", 'exec'), safe_globals)
+            fn = safe_globals.get(expected_name)
             if fn is None or not callable(fn):
                 raise TranspilerAbortError(
                     f"Generated code does not define a callable named '{expected_name}'. "

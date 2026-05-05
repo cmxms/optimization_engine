@@ -20,13 +20,8 @@ from config import config
 # Global placeholder for lazy loading
 lms = None
 
-# Agent → Model Mapping
-# Update model keys to match the exact model filenames in your LM Studio library.
-AGENT_MODEL_MAP = {
-    "critic":    "deepseek-ai/deepseek-coder-v2-lite-instruct",  # 7B — Code logic audit
-    "developer": "qwen/qwen2.5-coder-7b-instruct",              # 7B — Structured JSON extraction
-    "strategist": "mistralai/mistral-nemo-instruct-2407",      # 12B — Narrative synthesis (fits in 8GB Q4)
-}
+# Agent → Model mappings are now driven by config.py/environment variables
+# to allow for rapid experimentation without modifying the engine code.
 
 class VRAMManager:
     def __init__(self):
@@ -65,10 +60,10 @@ class VRAMManager:
             return OpenAI(base_url=config.llm_base_url, api_key="not-used")
 
         # 1. Determine search keyword
-        search_kw = ""
-        if agent_name == "critic": search_kw = "deepseek"
-        elif agent_name == "developer": search_kw = "qwen"
-        elif agent_name == "strategist": search_kw = "mistral"
+        search_kw = config.agent_models.get(agent_name)
+        if not search_kw:
+            print(f"  [VRAM] Warning: No config found for agent '{agent_name}', defaulting to '{agent_name}'")
+            search_kw = agent_name
         
         # 2. Search local library for the best match
         print(f"  [VRAM] Searching local library for '{search_kw}' model...")
@@ -98,12 +93,12 @@ class VRAMManager:
             print(f"  [VRAM] Loading '{agent_name}' model...")
             try:
                 self._ensure_lms()
-                # Request a larger context window (16k) to handle big strategies
-                # Using 'n_ctx' as the standard parameter for context size
-                self._current_handle = lms.llm(model_key, config={"n_ctx": 16384})
+                # Request an 8k context window to handle strategies without overflowing 8GB VRAM
+                # LM Studio SDK expects 'contextLength', not 'n_ctx'
+                self._current_handle = lms.llm(model_key, config={"contextLength": 8192})
                 self._current_agent = agent_name
                 self._current_resolved_key = model_key
-                print(f"  [VRAM] Success. Model {model_key} loaded (n_ctx=16k).")
+                print(f"  [VRAM] Success. Model {model_key} loaded (contextLength=8k).")
             except Exception as e:
                 print(f"  [VRAM] CRITICAL: Failed to load {model_key}: {e}")
                 raise

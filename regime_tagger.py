@@ -26,14 +26,31 @@ def tag_regimes(df: pd.DataFrame) -> pd.DataFrame:
     atr_rolling_pct_75 = atr_pct.rolling(window=500, min_periods=20).quantile(0.75)
     atr_rolling_pct_25 = atr_pct.rolling(window=500, min_periods=20).quantile(0.25)
     
-    # Calculate Trend
-    sma_50 = df_out['close'].rolling(window=50).mean()
-    slope = sma_50.diff(5) # 5-bar slope of the 50 SMA
+    # Calculate Trend with adaptive SMA length based on data frequency
+    sma_window = 50
+    diff_window = 5
+    if 'time' in df_out.columns:
+        try:
+            ts = pd.to_datetime(df_out['time'], unit='s', errors='coerce')
+            diffs = ts.diff().dropna().dt.total_seconds()
+            if not diffs.empty:
+                interval = diffs.mode()[0]
+                if interval <= 15:    # e.g., 15-second bars
+                    sma_window = 200  # ~50 minutes
+                    diff_window = 20
+                elif interval <= 30:  # e.g., 30-second bars
+                    sma_window = 100
+                    diff_window = 10
+        except Exception:
+            pass
+            
+    sma_trend = df_out['close'].rolling(window=sma_window).mean()
+    slope = sma_trend.diff(diff_window)
     
     # Regime Logic
     conditions = [
-        (df_out['close'] > sma_50) & (slope > 0),
-        (df_out['close'] < sma_50) & (slope < 0),
+        (df_out['close'] > sma_trend) & (slope > 0),
+        (df_out['close'] < sma_trend) & (slope < 0),
         (atr_pct > atr_rolling_pct_75),
         (atr_pct < atr_rolling_pct_25)
     ]

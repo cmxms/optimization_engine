@@ -93,44 +93,38 @@ def compile_filters(df: pd.DataFrame, params: dict, active_filters: list) -> dic
                     in_nyam = (hours >= 9.0) & (hours < 16.0)
                     in_nypm = (hours >= 13.5) & (hours < 15.0)
                     
-                    asia_h, asia_l, lon_h, lon_l, nyam_h, nyam_l, nypm_h, nypm_l = [np.nan]*8
-                    ar_h, ar_l, lr_h, lr_l, amr_h, amr_l, pmr_h, pmr_l = [np.nan]*8
-                    
-                    bull_sweep = np.zeros(n, dtype=bool)
-                    bear_sweep = np.zeros(n, dtype=bool)
-                    
-                    for i in range(1, n):
-                        if in_asia[i] and not in_asia[i-1]: ar_h, ar_l = high[i], low[i]
-                        elif in_asia[i]: ar_h, ar_l = max(ar_h, high[i]) if not np.isnan(ar_h) else high[i], min(ar_l, low[i]) if not np.isnan(ar_l) else low[i]
-                        if in_asia[i-1] and not in_asia[i]: asia_h, asia_l = ar_h, ar_l
-                            
-                        if in_lon[i] and not in_lon[i-1]: lr_h, lr_l = high[i], low[i]
-                        elif in_lon[i]: lr_h, lr_l = max(lr_h, high[i]) if not np.isnan(lr_h) else high[i], min(lr_l, low[i]) if not np.isnan(lr_l) else low[i]
-                        if in_lon[i-1] and not in_lon[i]: lon_h, lon_l = lr_h, lr_l
-                            
-                        if in_nyam[i] and not in_nyam[i-1]: amr_h, amr_l = high[i], low[i]
-                        elif in_nyam[i]: amr_h, amr_l = max(amr_h, high[i]) if not np.isnan(amr_h) else high[i], min(amr_l, low[i]) if not np.isnan(amr_l) else low[i]
-                        if in_nyam[i-1] and not in_nyam[i]: nyam_h, nyam_l = amr_h, amr_l
-                            
-                        if in_nypm[i] and not in_nypm[i-1]: pmr_h, pmr_l = high[i], low[i]
-                        elif in_nypm[i]: pmr_h, pmr_l = max(pmr_h, high[i]) if not np.isnan(pmr_h) else high[i], min(pmr_l, low[i]) if not np.isnan(pmr_l) else low[i]
-                        if in_nypm[i-1] and not in_nypm[i]: nypm_h, nypm_l = pmr_h, pmr_l
-                            
-                        c, l, h_p = close[i], low[i], high[i]
-                        is_bull, is_bear = False, False
+                    def get_session_levels(in_sess):
+                        enters = in_sess & ~in_sess.shift(1, fill_value=False)
+                        exits = ~in_sess & in_sess.shift(1, fill_value=False)
+                        session_id = enters.cumsum()
+                        completed_id = exits.cumsum()
                         
-                        if not np.isnan(asia_l) and l <= asia_l and c > asia_l: is_bull = True
-                        if not np.isnan(lon_l) and l <= lon_l and c > lon_l: is_bull = True
-                        if not np.isnan(nyam_l) and l <= nyam_l and c > nyam_l: is_bull = True
-                        if not np.isnan(nypm_l) and l <= nypm_l and c > nypm_l: is_bull = True
+                        s_high = pd.Series(np.where(in_sess, high, np.nan))
+                        s_low = pd.Series(np.where(in_sess, low, np.nan))
                         
-                        if not np.isnan(asia_h) and h_p >= asia_h and c < asia_h: is_bear = True
-                        if not np.isnan(lon_h) and h_p >= lon_h and c < lon_h: is_bear = True
-                        if not np.isnan(nyam_h) and h_p >= nyam_h and c < nyam_h: is_bear = True
-                        if not np.isnan(nypm_h) and h_p >= nypm_h and c < nypm_h: is_bear = True
+                        s_max = s_high.groupby(session_id).max()
+                        s_min = s_low.groupby(session_id).min()
                         
-                        bull_sweep[i] = is_bull
-                        bear_sweep[i] = is_bear
+                        return completed_id.map(s_max).values, completed_id.map(s_min).values
+
+                    asia_h, asia_l = get_session_levels(pd.Series(in_asia))
+                    lon_h, lon_l = get_session_levels(pd.Series(in_lon))
+                    nyam_h, nyam_l = get_session_levels(pd.Series(in_nyam))
+                    nypm_h, nypm_l = get_session_levels(pd.Series(in_nypm))
+
+                    bull_sweep = (
+                        (~np.isnan(asia_l) & (low <= asia_l) & (close > asia_l)) |
+                        (~np.isnan(lon_l) & (low <= lon_l) & (close > lon_l)) |
+                        (~np.isnan(nyam_l) & (low <= nyam_l) & (close > nyam_l)) |
+                        (~np.isnan(nypm_l) & (low <= nypm_l) & (close > nypm_l))
+                    )
+
+                    bear_sweep = (
+                        (~np.isnan(asia_h) & (high >= asia_h) & (close < asia_h)) |
+                        (~np.isnan(lon_h) & (high >= lon_h) & (close < lon_h)) |
+                        (~np.isnan(nyam_h) & (high >= nyam_h) & (close < nyam_h)) |
+                        (~np.isnan(nypm_h) & (high >= nypm_h) & (close < nypm_h))
+                    )
                         
                     def bars_since(cond):
                         idx = np.arange(len(cond))

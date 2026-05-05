@@ -36,9 +36,10 @@ def _diagnose_drift(
 
     if buy_recall < PARITY_THRESHOLD:
         n_pine = int(pine_buy.sum())
-        n_matched = int((python_buy[pine_buy.astype(bool)] == 1).sum())
+        pine_buy_mask = pine_buy == 1
+        n_matched = int((python_buy[pine_buy_mask] == 1).sum())
         n_missed = n_pine - n_matched
-        n_extra = int((python_buy[~pine_buy.astype(bool)] == 1).sum())
+        n_extra = int((python_buy[~pine_buy_mask] == 1).sum())
         lines.append(
             f"BUY signal drift ({buy_recall*100:.1f}% recall): "
             f"Pine fired {n_pine} buy signals. Python matched {n_matched}, "
@@ -47,9 +48,10 @@ def _diagnose_drift(
 
     if sell_recall < PARITY_THRESHOLD:
         n_pine = int(pine_sell.sum())
-        n_matched = int((python_sell[pine_sell.astype(bool)] == 1).sum())
+        pine_sell_mask = pine_sell == 1
+        n_matched = int((python_sell[pine_sell_mask] == 1).sum())
         n_missed = n_pine - n_matched
-        n_extra = int((python_sell[~pine_sell.astype(bool)] == 1).sum())
+        n_extra = int((python_sell[~pine_sell_mask] == 1).sum())
         lines.append(
             f"SELL signal drift ({sell_recall*100:.1f}% recall): "
             f"Pine fired {n_pine} sell signals. Python matched {n_matched}, "

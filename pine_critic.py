@@ -105,17 +105,36 @@ class PineCritic:
             if client is None:
                 client = OpenAI(base_url=config.llm_base_url, api_key="lm-studio")
             
-            # Skip RAG to save tokens
+            # Targeted Snippet Approach: Find risk zones and preserve line numbers
+            risk_keywords = ["security", "entry", "exit", "close", "var", "=>"]
+            included_line_indices = set()
+            
+            # Find relevant lines and surrounding context
+            for i, line in enumerate(self.lines):
+                line_lower = line.lower()
+                # Exclude purely visual lines from triggering a zone
+                if any(x in line_lower for x in ['plot', 'table.', 'line.', 'label.', 'bgcolor', 'fill', 'input.']):
+                    continue
+                
+                if any(keyword in line_lower for keyword in risk_keywords):
+                    start = max(0, i - 2)
+                    end = min(len(self.lines), i + 3)
+                    for j in range(start, end):
+                        included_line_indices.add(j)
+            
+            # Reconstruct the snippet preserving order and line numbers
             minified_lines = []
-            for line in self.lines:
-                clean_line = line.split('//')[0].rstrip()
-                if not clean_line.strip():
-                    continue
-                # Skip UI/Visual noise to save context space
-                if any(x in clean_line.lower() for x in ['input.', 'plot', 'table.', 'line.', 'label.', 'bgcolor', 'fill']):
-                    continue
-                minified_lines.append(clean_line)
-            minified_pine_text = '\n'.join(minified_lines)
+            sorted_indices = sorted(list(included_line_indices))
+            
+            for idx in sorted_indices:
+                clean_line = self.lines[idx].split('//')[0].rstrip()
+                if clean_line.strip():
+                    minified_lines.append(f"{idx+1}: {clean_line}")
+                    
+            if not minified_lines:
+                minified_pine_text = "No logic zones detected."
+            else:
+                minified_pine_text = '\n'.join(minified_lines)
 
             prompt = f"""
 Audit this Pine Script for repainting and logic errors.

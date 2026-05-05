@@ -103,11 +103,11 @@ Status: {pr.status}
             if isinstance(v, bool):
                 # Matches: variable = input.bool(true, ...
                 v_str = "true" if v else "false"
-                pattern = rf'({k}\s*=\s*input\.bool\()(true|false)'
+                pattern = rf'(\b{k}\b\s*=\s*input\.bool\()(true|false)'
                 replacement = rf'\g<1>{v_str}'
             else:
                 # Matches: variable = input.int(OLD_VAL, ...
-                pattern = rf'({k}\s*=\s*input\.(?:int|float)\()([-\d]+(?:\.\d+)?)'
+                pattern = rf'(\b{k}\b\s*=\s*input\.(?:int|float|source)\()([-\d]+(?:\.\d+)?)'
                 replacement = rf'\g<1>{v}'
             refined_text = re.sub(pattern, replacement, refined_text, flags=re.IGNORECASE)
     

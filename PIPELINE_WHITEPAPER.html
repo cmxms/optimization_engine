@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimization Engine: Technical Whitepaper</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0c;
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --accent: #4f46e5;
+            --accent-glow: rgba(79, 70, 229, 0.3);
+            --text-main: #e2e8f0;
+            --text-dim: #94a3b8;
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 80px 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 80px;
+        }
+
+        h1 {
+            font-size: 3.5rem;
+            font-weight: 800;
+            background: linear-gradient(to right, #fff, #6366f1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1rem;
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            color: var(--text-dim);
+            font-size: 1.2rem;
+            font-weight: 300;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .phase-grid {
+            display: grid;
+            gap: 2rem;
+        }
+
+        .phase-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 2.5rem;
+            position: relative;
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .phase-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--accent);
+            box-shadow: 0 0 40px var(--accent-glow);
+        }
+
+        .phase-number {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent);
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            margin-bottom: 1rem;
+            display: block;
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            margin: 0 0 1rem 0;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .meta {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        .meta span {
+            background: rgba(255,255,255,0.05);
+            padding: 4px 12px;
+            border-radius: 6px;
+        }
+
+        p {
+            color: var(--text-dim);
+            font-size: 1.05rem;
+            margin-bottom: 1.5rem;
+        }
+
+        ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        li {
+            padding-left: 1.5rem;
+            position: relative;
+            margin-bottom: 0.75rem;
+            color: var(--text-main);
+        }
+
+        li::before {
+            content: "→";
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+        }
+
+        .diagram-box {
+            margin-top: 60px;
+            padding: 40px;
+            background: #000;
+            border-radius: 24px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .footer {
+            margin-top: 100px;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.9rem;
+            padding-bottom: 40px;
+        }
+
+        @media print {
+            body { background: #fff; color: #000; }
+            .phase-card { border: 1px solid #ddd; break-inside: avoid; }
+            h1 { background: none; color: #000; -webkit-text-fill-color: #000; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Optimization Engine</h1>
+            <p class="subtitle">Multi-Agent Quantitative Strategy Lab Architecture & Pipeline Workflow</p>
+        </header>
+
+        <div style="text-align: center; margin-bottom: 80px;">
+            <img src="pipeline_infographic.png" alt="Optimization Pipeline Infographic" style="width: 100%; border-radius: 24px; border: 1px solid var(--border); box-shadow: 0 20px 50px rgba(0,0,0,0.5);">
+        </div>
+
+        <div class="phase-grid">
+            <!-- Phase 0 -->
+            <div class="phase-card">
+                <span class="phase-number">Phase 00</span>
+                <h2>Inbox & Validation Routing</h2>
+                <div class="meta">
+                    <span>File: optimization_engine.py</span>
+                    <span>Action: Startup Routine</span>
+                </div>
+                <p>The system initializes by automating the project lifecycle and ingesting historical performance data to build a continuous feedback loop.</p>
+                <ul>
+                    <li>Auto-routing of .pine scripts from data/inbox to dedicated project directories.</li>
+                    <li>Ingestion of TradingView backtest exports into internal_labs.db.</li>
+                    <li>Automated project context isolation.</li>
+                </ul>
+            </div>
+
+            <!-- Phase 1 -->
+            <div class="phase-card">
+                <span class="phase-number">Phase 01</span>
+                <h2>Knowledge Ingestion (RAG)</h2>
+                <div class="meta">
+                    <span>File: rag.py</span>
+                    <span>Engine: SQLite + Sentence Transformers</span>
+                </div>
+                <p>Seeding the local vector database with common Pine Script anti-patterns and repainting logic blocks.</p>
+                <ul>
+                    <li>Semantic search for known vulnerabilities.</li>
+                    <li>Context injection for the Logic Critic agent.</li>
+                    <li>Persistent failure analysis logging.</li>
+                </ul>
+            </div>
+
+            <!-- Phase 2 -->
+            <div class="phase-card">
+                <span class="phase-number">Phase 02</span>
+                <h2>Market Context Analysis</h2>
+                <div class="meta">
+                    <span>File: market_context.py</span>
+                    <span>API: MCP / Tradier</span>
+                </div>
+                <p>Establishing the real-time market regime to provide the Strategist with a benchmark for historical performance.</p>
+                <ul>
+                    <li>Macro regime detection (Bull/Bear/Neutral).</li>
+                    <li>Volatility and Breadth health assessment.</li>
+                    <li>Regime-aware strategy stress testing.</li>
+                </ul>
+            </div>
+
+            <!-- Phase 3 -->
+            <div class="phase-card">
+                <span class="phase-number">Phase 03</span>
+                <h2>The Developer (IR Builder)</h2>
+                <div class="meta">
+                    <span>File: ir_builder.py</span>
+                    <span>Logic: Regex + Role Classification</span>
+                </div>
+                <p>Deconstructing Pine Script into a language-agnostic Intermediate Representation (IR) for mathematical optimization.</p>
+                <ul>
+                    <li>Classification of inputs into Signal, Risk, and Display roles.</li>
+                    <li>Parameter boundary detection for Optuna.</li>
+                    <li>Extraction of conditional entry/exit logic.</li>
+                </ul>
+            </div>
+
+            <!-- Phase 4 -->
+            <div class="phase-card">
+                <span class="phase-number">Phase 04</span>
+                <h2>The Logic Critic & Auto-Fixer</h2>
+                <div class="meta">
+                    <span>File: pine_critic.py, auto_fixer.py</span>
+                    <span>Model: DeepSeek-Coder-V2-Lite</span>
+                </div>
+                <p>A rigorous audit of the code followed by immediate structural hardening.</p>
+                <ul>
+                    <li>Static and LLM-driven repaint risk assessment.</li>
+                    <li>Automated patching of division-by-zero risks.</li>
+                    <li>Hardening of barmerge and timeframe logic.</li>
+                </ul>
+            </div>
+
+            <!-- Phase 5 -->
+            <div class="phase-card">
+                <span class="phase-number">Phase 05</span>
+                <h2>The Quant Engine</h2>
+                <div class="meta">
+                    <span>File: quant_engine.py</span>
+                    <span>Engine: Optuna + 5-Fold WFA</span>
+                </div>
+                <p>Vectorized backtesting and hyperparameter optimization using advanced walk-forward analysis.</p>
+                <ul>
+                    <li>5-Fold Walk-Forward Analysis (IS/OOS Splits).</li>
+                    <li>Monte Carlo trade sequence shuffling (1,000 iterations).</li>
+                    <li>Objective utility maximization (Capped Sortino + Realism Factor).</li>
+                </ul>
+            </div>
+
+            <!-- Phase 6 -->
+            <div class="phase-card">
+                <span class="phase-number">Phase 06</span>
+                <h2>Lead Strategist Synthesis</h2>
+                <div class="meta">
+                    <span>File: strategist.py</span>
+                    <span>Model: Mistral-Nemo-12B</span>
+                </div>
+                <p>Synthesizing all quantitative and logic data into a final executive verdict.</p>
+                <ul>
+                    <li>Brutally honest "Hard Truth" narrative assessment.</li>
+                    <li>Confidence scoring and GO/NO-GO logic.</li>
+                    <li>Slippage and realism sanity checks.</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="footer">
+            &copy; 2026 Optimization Engine &bull; Confidential Multi-Agent Architecture
+        </div>
+    </div>
+</body>
+</html>

@@ -8,6 +8,7 @@ class OptimizationConfig:
     llm_base_url: str
     llm_model: str
     output_dir: str
+    agent_models: dict
 
 def load_config() -> OptimizationConfig:
     # Use the directory containing this file as the root for the engine
@@ -26,11 +27,18 @@ def load_config() -> OptimizationConfig:
     else:
         output_dir = output_dir_raw
 
+    agent_models = {
+        "critic": os.getenv("LLM_MODEL_CRITIC", "deepseek"),
+        "developer": os.getenv("LLM_MODEL_DEVELOPER", "qwen"),
+        "strategist": os.getenv("LLM_MODEL_STRATEGIST", "mistral"),
+    }
+
     return OptimizationConfig(
         use_llm=use_llm,
         llm_base_url=os.getenv("LLM_BASE_URL", "http://localhost:1234/v1"),
         llm_model=os.getenv("LLM_MODEL", "mistral-nemo-instruct-2407"),
         output_dir=output_dir,
+        agent_models=agent_models,
     )
 
 config = load_config()

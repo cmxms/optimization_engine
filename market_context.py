@@ -51,7 +51,8 @@ def get_market_snapshot() -> dict:
         snapshot = {
             "status": "success",
             "regime": regime_res.data.get("summary", "Unknown Regime") if regime_res.success else "Regime Fetch Failed",
-            "breadth": breadth_res.data.get("summary", "Unknown Breadth") if breadth_res.success else "Breadth Fetch Failed"
+            "breadth": breadth_res.data.get("summary", "Unknown Breadth") if breadth_res.success else "Breadth Fetch Failed",
+            "note": "Macro context is for orientation only. Ensure granularity matches backtest timeframe."
         }
         
         # Add some specific data points if available

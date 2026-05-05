@@ -38,16 +38,18 @@ def run_ingestor():
             df = pd.read_csv(csv_file)
             
             # Simple TV CSV detection
-            if 'Trade #' in df.columns and 'Net P&L USD' in df.columns:
+            pnl_cols = df.filter(regex=r'Net P&L', axis=1).columns
+            if 'Trade #' in df.columns and len(pnl_cols) > 0:
+                pnl_col = pnl_cols[0]
                 # TV Export format
                 # Filter for Exit trades
                 exits = df[df['Type'].str.contains('Exit', case=False, na=False)]
                 tv_trades = len(exits)
                 
                 if tv_trades > 0:
-                    wins = exits[exits['Net P&L USD'] > 0]
+                    wins = exits[exits[pnl_col] > 0]
                     tv_win_rate = (len(wins) / tv_trades) * 100.0
-                    tv_net_pnl = exits['Net P&L USD'].sum()
+                    tv_net_pnl = exits[pnl_col].sum()
                     
                     cursor.execute("""
                         INSERT INTO validated_runs (strategy_name, tv_trades, tv_win_rate, tv_net_pnl, source_csv)

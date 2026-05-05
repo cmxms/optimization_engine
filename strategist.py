@@ -75,8 +75,23 @@ Quant Report:
 - Overfitting Risk: {self.quant_report.overfitting_risk}
 - Execution Assumptions: {getattr(self.quant_report, 'slippage_ticks_used', 1)} ticks slippage, ${getattr(self.quant_report, 'commission_per_rt', 4.10):.2f} RT commission.
 
-Based on this data, write a 2-3 paragraph "Hard Truth" (or "Executive Commendation" if it passed).
-Explain the *what* and the *why*. If it collapsed out-of-sample, explain *why* (e.g., "The strategy is a fragile edge that cannot survive real-world execution costs like slippage..."). If it's repainting, call out the illusion of the backtester. 
+Market Regime Performance:
+{regime_str}
+
+Based on this data, write an executive assessment. You MUST format your response exactly like this:
+
+### Executive Verdict
+[One bold sentence summarizing the GO/NO-GO decision and primary reason]
+
+### Quantitative Reality
+[One paragraph explaining the OOS performance, slippage realism, and overfitting risk]
+
+### Structural Integrity
+[One paragraph explaining the code quality, repainting risks, and required fixes]
+
+### Market Context
+[One paragraph evaluating performance across different market regimes (trend vs chop, etc.) based on the Market Regime Performance data]
+
 Be brutally honest, professional, and insightful. Speak directly to the strategy's viability in the live market.
 """
             from llm_utils import call_llm_with_retry

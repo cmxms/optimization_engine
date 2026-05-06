@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from config import config
 
-def write_artifacts(pine_text, critic_report, quant_report, verdict):
+def write_artifacts(pine_text, critic_report, quant_report, verdict, dissent=None):
     # Ensure output dir exists
     os.makedirs(config.output_dir, exist_ok=True)
     
@@ -50,6 +50,15 @@ Status: {pr.status}
 """
     else:
         dossier_content += "Pine Signal Export: ❌ Not Detected (Cannot Verify Parity)\n"
+
+    if dissent:
+        dossier_content += f"""
+---
+
+## 3. Catfish Dissent (Devil's Advocate)
+**Persona:** Shallan
+{dissent}
+"""
 
     dossier_content += f"""
 ---

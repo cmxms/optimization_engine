@@ -49,16 +49,25 @@ Automatically patches structural vulnerabilities identified by the Critic.
 2.  **5-Fold Walk-Forward Analysis (WFA)**: Optimizes on IS, validates on OOS across 5 chronological chunks.
 3.  **Monte Carlo Simulation**: Shuffles trade sequences 1,000 times to calculate the **Luck Factor**.
 
-### Phase 6: The Strategist (Synthesis)
-**File**: `strategist.py`  
-**Model**: `Mistral-Nemo-Instruct-2407` (12B)  
-Synthesizes all technical and logic data into a final executive assessment.  
-- **"Hard Truth" Narrative**: The LLM acts as a cynical Lead Strategist, providing brutally honest feedback on strategy viability.
+### Phase 6: The Catfish (Dissent)
+**File**: `catfish.py`  
+**Model**: `Qwen2.5-Coder-7B` (Shallan Persona)  
+Acts as the Devil's Advocate. Challenges the findings of the Critic and Quant engines to prevent groupthink and identify hidden real-world failure modes.
 
-### Phase 7: Artifact Generation & Self-Healing
+### Phase 7: The Operator (Production Audit)
+**File**: `quant_operator.py`  
+**Model**: `Mistral-Nemo-Instruct-2407` (Adolin Persona)  
+Focuses on security, code safety, and production readiness. Audits the script for execution bottlenecks and potential vulnerabilities.
+
+### Phase 8: The Strategist (Synthesis)
+**File**: `strategist.py`  
+**Model**: `Mistral-Nemo-Instruct-2407` (Dalinar Persona)  
+Synthesizes all technical data, quant results, and Catfish dissent into a final executive assessment and "GO/NO-GO" verdict.
+
+### Phase 9: Artifact Generation & Self-Healing
 **File**: `artifact_writer.py`, `failure_analyst.py`  
-- **Dossier**: Generates the final `Strategy_Dossier.md` with best parameters and performance tables.
-- **Refined Script**: Exports the final Pine Script with injected optimal parameters and structural fixes from Phase 4.5.
+- **Dossier**: Generates the final `Strategy_Dossier.md` with best parameters, performance tables, and a dedicated dissent section.
+- **Refined Script**: Exports the final Pine Script with injected optimal parameters and structural fixes.
 
 ---
 
@@ -80,10 +89,12 @@ graph TD
     G --> H[Walk-Forward Analysis]
     H --> I[Monte Carlo Stress Test]
     I --> J[Quant Report]
-    E --> K[Strategist Agent]
+    E --> K[Catfish Agent]
     J --> K
-    K --> L[Final Verdict & Hard Truth]
-    L --> M[Strategy Dossier]
-    M --> N[Failure Analysis -> RAG]
+    K --> L[Operator Agent]
+    L --> M[Strategist Agent]
+    M --> N[Final Verdict & Hard Truth]
+    N --> O[Strategy Dossier]
+    O --> P[Failure Analysis -> RAG]
 ```
 

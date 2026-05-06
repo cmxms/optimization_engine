@@ -15,6 +15,9 @@ from vram_manager import vram
 from market_context import get_market_snapshot
 from quant_developer import run_developer
 from validation_ingestor import run_ingestor
+from catfish import run_catfish
+from quant_operator import run_operator
+from lane_manager import orchestrator
 import shutil
 import re
 
@@ -22,16 +25,7 @@ import re
 def main():
     """
     Main entry point for the Optimization Engine pipeline.
-    Orchestrates the multi-agent workflow:
-    1. RAG Seed
-    2. Market Context Fetching
-    3. Developer (Parsing/Profiling)
-    4. Logic Critic (Audit)
-    4b. Pine Transpiler (if unknown indicators detected)
-    5. Parity Gate (enforced inside Quant Engine)
-    6. Quant Engine (Backtest/Optuna) — Full-variable optimization
-    7. Strategist (Synthesis)
-    8. Artifact Generation & Self-Healing
+    Orchestrates the multi-agent workflow via the Urithiru LaneManager.
     """
     parser = argparse.ArgumentParser(description="Optimization Engine - Multi-Agent Quant Lab")
     parser.add_argument("--project-dir", type=str, required=False, help="Path to the Project directory (Optional if using Inbox)")
@@ -55,7 +49,7 @@ def main():
         config.use_llm = False
 
     print("==================================================")
-    print("Optimization Engine - Initializing")
+    print("Optimization Engine - Initializing (Urithiru Mode)")
     print("==================================================")
 
     # Step 0: Ingest TV Validations
@@ -122,8 +116,8 @@ def main():
     print("\n[Step 2/8] Fetching Market Context...")
     snapshot = get_market_snapshot()
 
-    # Step 3: Developer Agent
-    print("\n[Step 3/8] Agent 1: Developer extracting strategy recipe...")
+    # Step 3: Developer Agent (Navani)
+    print("\n[Step 3/9] Agent 1: Navani (Developer) extracting strategy recipe...")
     recipe = run_developer(pine_text, snapshot=snapshot)
     unknown_indicators = recipe.get("unknown_indicators", [])
     stateful_vars = recipe.get("stateful_vars", [])
@@ -132,77 +126,80 @@ def main():
     if stateful_vars:
         print(f"  -> Stateful vars detected: {stateful_vars}")
 
-    # Step 4: Logic Critic
-    print("\n[Step 4/8] Agent 2: Logic Critic auditing Pine Script...")
+    # Step 4: Logic Critic (Jasnah)
+    print("\n[Step 4/9] Agent 2: Jasnah (Critic) auditing Pine Script...")
     try:
-        critic_client = vram.load_agent("critic")
-        critic_report = run_critic(pine_text, client=critic_client)
+        critic_report = orchestrator.run_lane("critic", run_critic, pine_text)
         print(f"  -> Found {len(critic_report.issues)} issues. Repaint Risk: {critic_report.repaint_risk_score}/10")
     except Exception as e:
-        print(f"  [OptiEngine - Critic] WARNING: LLM audit failed: {e}")
+        print(f"  [OptiEngine - Jasnah] WARNING: LLM audit failed: {e}")
         print("  -> Proceeding with static analysis only.")
-        # Fallback to a basic report if run_critic didn't return one
         from pine_critic import run_critic as _run_critic_internal
-        # This will still run static analysis but skip LLM if client is None or fails
         critic_report = _run_critic_internal(pine_text, client=None)
 
     # Step 4.5: Auto-Fixer
     from auto_fixer import apply_auto_fixes
     pine_text = apply_auto_fixes(pine_text, critic_report)
 
-    # Step 4b: Pine Transpiler (only if unknown indicators found)
+    # Step 4b: Transpiler (Renarin)
     if unknown_indicators:
-        print(f"\n[Step 4b/8] Agent 2b: Pine Transpiler handling {len(unknown_indicators)} unknown indicator(s)...")
-        # Load the CSV data for parity verification
+        print(f"\n[Step 4b/9] Agent 2b: Renarin (Transpiler) handling unknown indicator(s)...")
         import pandas as pd, glob as _glob
         csv_files = _glob.glob(os.path.join(project_dir, "*.csv"))
         df_ref = None
         for csv_f in csv_files:
-            if 'output' in csv_f:
-                continue
+            if 'output' in csv_f: continue
             try:
                 df_ref = pd.read_csv(csv_f)
                 df_ref.columns = [c.lower() for c in df_ref.columns]
-                print(f"  -> Using {os.path.basename(csv_f)} for parity verification.")
                 break
-            except Exception:
-                continue
+            except Exception: continue
 
         if df_ref is None:
-            print("  -> ERROR: No CSV data found for parity verification. Cannot transpile unknown indicators.")
+            print("  -> ERROR: No CSV data found for parity verification.")
             sys.exit(1)
 
         try:
-            transpiler_client = vram.load_agent("critic")  # DeepSeek reused — same VRAM slot
-            run_transpiler(pine_text, unknown_indicators, df_ref, client=transpiler_client)
-            print(f"  -> All unknown indicators transpiled and verified. Reloading indicator catalog...")
-            # Reload the indicator module so new functions are available
+            # Transpiler uses Renarin lane (Wit persona)
+            orchestrator.run_lane("transpiler", run_transpiler, pine_text, unknown_indicators, df_ref)
+            print(f"  -> All unknown indicators transpiled. Reloading indicator catalog...")
             import importlib, indicator_lib
             importlib.reload(indicator_lib)
         except TranspilerAbortError as e:
             print(f"\n  TRANSPILER ABORTED: {e}")
             sys.exit(1)
 
-    # Step 5+: Quant Engine (Parity Gate enforced internally)
-    print(f"\n[Step 5/8] Agent 3: Quant Engine running full-variable backtest...")
-    quant_report = run_quant(args.project_dir, recipe, n_trials=args.trials)
+    # Step 5: Quant Engine (Pattern)
+    print(f"\n[Step 5/9] Agent 3: Pattern (Quant) running optimization...")
+    quant_report = run_quant(project_dir, recipe, n_trials=args.trials)
     
-    # Step 6: Strategist Agent
-    print("\n[Step 6/8] Agent 4: Strategist synthesizing results...")
-    verdict = run_strategist(critic_report, quant_report, snapshot=snapshot, client=vram.load_agent("strategist"))
+    # Step 6: Catfish (Shallan)
+    print("\n[Step 6/9] Agent 4: Shallan (Catfish) finding flaws...")
+    dissent = orchestrator.run_lane("catfish", run_catfish, pine_text, critic_report, quant_report)
+    print(f"  -> Catfish Dissent Generated.")
+
+    # Step 7: Operator (Adolin)
+    print("\n[Step 7/9] Agent 5: Adolin (Operator) production audit...")
+    audit = orchestrator.run_lane("operator", run_operator, pine_text)
+    print(f"  -> {audit}")
+
+    # Step 8: Strategist Agent (Dalinar)
+    print("\n[Step 8/9] Agent 6: Dalinar (Strategist) synthesis...")
+    verdict = orchestrator.run_lane("strategist", run_strategist, critic_report, quant_report, snapshot=snapshot, dissent=dissent)
     print(f"  -> Final Verdict: {verdict.verdict} (Confidence: {verdict.confidence_pct}%)")
 
-    # Step 7: Artifacts & Self-Healing
-    print("\n[Step 7/8] Generating Artifacts & Analysis...")
-    write_artifacts(pine_text, critic_report, quant_report, verdict)
+    # Step 9: Artifacts & Self-Healing
+    print("\n[Step 9/9] Generating Artifacts...")
+    write_artifacts(pine_text, critic_report, quant_report, verdict, dissent=dissent)
     
     if config.use_llm:
-        print("\n[Step 8/8] Running Failure Analyst...")
-        run_failure_analyst(pine_text, quant_report, critic_report, client=vram.load_agent("strategist"))
+        print("\n[Failure Analyst] Running Dalinar post-mortem...")
+        orchestrator.run_lane("strategist", run_failure_analyst, pine_text, quant_report, critic_report)
 
     # Cleanup
-    vram.unload_all()
+    orchestrator.unload_all()
     print("\nOptimization Engine Pipeline Complete.")
+
 
 if __name__ == "__main__":
     main()

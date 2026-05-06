@@ -17,10 +17,11 @@ class StrategistVerdict:
 
 class Strategist:
     """Synthesizes logic and quantitative findings into a final strategy assessment."""
-    def __init__(self, critic_report: CriticReport, quant_report: QuantReport, market_snapshot: dict = None):
+    def __init__(self, critic_report: CriticReport, quant_report: QuantReport, market_snapshot: dict = None, dissent: str = None):
         self.critic_report = critic_report
         self.quant_report = quant_report
         self.market_snapshot = market_snapshot or {}
+        self.dissent = dissent
         self.verdict = StrategistVerdict()
 
     def generate_rule_based_verdict(self):
@@ -78,6 +79,9 @@ Quant Report:
 Market Regime Performance:
 {regime_str}
 
+Catfish Dissent (Devil's Advocate):
+{self.dissent or "No dissent generated."}
+
 Based on this data, write an executive assessment. You MUST format your response exactly like this:
 
 ### Executive Verdict
@@ -115,6 +119,6 @@ Be brutally honest, professional, and insightful. Speak directly to the strategy
         self.run_llm_synthesis(client=client)
         return self.verdict
 
-def run_strategist(critic_report: CriticReport, quant_report: QuantReport, snapshot: dict = None, client: OpenAI = None) -> StrategistVerdict:
-    strategist = Strategist(critic_report, quant_report, market_snapshot=snapshot)
+def run_strategist(critic_report: CriticReport, quant_report: QuantReport, snapshot: dict = None, client: OpenAI = None, dissent: str = None) -> StrategistVerdict:
+    strategist = Strategist(critic_report, quant_report, market_snapshot=snapshot, dissent=dissent)
     return strategist.analyze(client=client)
